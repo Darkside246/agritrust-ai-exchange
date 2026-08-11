@@ -24,14 +24,25 @@ describe('WHATSAPP DEVELOPMENT TEST ADAPTER & PROVIDER ABSTRACTION SUITE', () =>
   it('Test 2: Inventory request processing and AI draft (Scenario 2)', async () => {
     const res = await AgriTrustDatabase.processInboundWhatsAppMessage('+12465550199', 'Do you have 500kg of tomatoes available?');
     expect(res.isPromptInjection).toBe(false);
-    expect(res.aiDraftText).toContain('Barbados Tomatoes');
     expect(res.requiresHumanApproval).toBe(true);
+    if (process.env.ANTHROPIC_API_KEY) {
+      expect(res.aiBlocked).toBe(false);
+      expect(res.aiDraftText).toBeTruthy();
+    } else {
+      expect(res.aiBlocked).toBe(true);
+      expect(res.aiBlockReason).toContain('ANTHROPIC_API_KEY');
+    }
   });
 
   it('Test 3: Order status retrieval for verified buyer (Scenario 3)', async () => {
-    const res = await AgriTrustDatabase.processInboundWhatsAppMessage('+12465550199', 'Where is my order #ORD-BAR-2026-901?');
+    const res = await AgriTrustDatabase.processInboundWhatsAppMessage('+12465550199', 'Where is my order status?');
     expect(res.contactType).toBe('BUYER');
-    expect(res.aiDraftText).toContain('CONFIRMED');
+    if (process.env.ANTHROPIC_API_KEY) {
+      expect(res.aiBlocked).toBe(false);
+      expect(res.aiDraftText).toBeTruthy();
+    } else {
+      expect(res.aiBlocked).toBe(true);
+    }
   });
 
   it('Test 4: Unknown contact classification (Scenario 4)', async () => {

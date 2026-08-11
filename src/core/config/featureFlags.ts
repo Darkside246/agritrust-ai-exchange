@@ -8,6 +8,10 @@ export class FeatureFlagManager {
     ADVANCED_LOGISTICS: true,
     PUBLIC_TRACEABILITY: true,
     AUTO_PROCUREMENT: false,
+    WHATSAPP_AI_ASSIST: true,
+    WHATSAPP_AI_AUTONOMOUS_SEND: false,
+    WHATSAPP_AI_NEGOTIATION: false,
+    WHATSAPP_AI_ORDER_CREATION: false,
   };
 
   public static getFlags(): FeatureFlags {

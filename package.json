@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.116.0",
     "clsx": "^2.1.1",
     "express": "^4.19.2",
     "lucide-react": "^0.395.0",

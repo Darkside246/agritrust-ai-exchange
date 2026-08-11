@@ -3,6 +3,8 @@ import { DevelopmentWhatsAppProvider } from './developmentWhatsAppProvider';
 import { WhatsAppWebDevelopmentProvider } from './whatsappWebDevelopmentProvider';
 import { MetaCloudWhatsAppProvider } from './metaCloudWhatsAppProvider';
 import { AuditLedger } from '../audit/auditLedger';
+import { AgriTrustDatabase } from '../database/db';
+import { generateCommunicationsAgentDraft, AgentToolCallRecord } from '../ai/communicationsAgent';
 
 export interface ProcessedInboundMessage {
   messageId: string;
@@ -18,6 +20,9 @@ export interface ProcessedInboundMessage {
   environment: 'development' | 'production' | 'test';
   provider: WhatsAppProviderType;
   simulated: boolean;
+  aiToolCalls?: AgentToolCallRecord[];
+  aiBlocked?: boolean;
+  aiBlockReason?: string;
 }
 
 export class WhatsAppMessagingGateway {
@@ -83,18 +88,25 @@ export class WhatsAppMessagingGateway {
   public static resolveContactType(phoneNumber: string): {
     contactType: 'BUYER' | 'SELLER' | 'ADMIN' | 'STAFF' | 'UNKNOWN_CONTACT';
     contactId: string;
+    linkedEntityId: string | null;
   } {
     const clean = phoneNumber.replace(/[^0-9]/g, '');
-    if (clean.endsWith('5550199') || clean.endsWith('5550101')) {
-      return { contactType: 'BUYER', contactId: 'wa-cnt-001' };
+    const contacts = AgriTrustDatabase.getWhatsAppContacts();
+    const match = contacts.find((c) => c.phoneNumber.replace(/[^0-9]/g, '').endsWith(clean.slice(-9)));
+
+    if (match) {
+      return {
+        contactType: match.accountType,
+        contactId: match.id,
+        linkedEntityId: match.linkedEntityId || null,
+      };
     }
-    if (clean.endsWith('5550198') || clean.endsWith('5550202')) {
-      return { contactType: 'SELLER', contactId: 'wa-cnt-002' };
-    }
-    if (clean.endsWith('5550000')) {
-      return { contactType: 'ADMIN', contactId: 'wa-cnt-admin' };
-    }
-    return { contactType: 'UNKNOWN_CONTACT', contactId: `wa-cnt-unk-${clean.slice(-4)}` };
+
+    return {
+      contactType: 'UNKNOWN_CONTACT',
+      contactId: `wa-cnt-unk-${clean.slice(-4)}`,
+      linkedEntityId: null,
+    };
   }
 
   public static detectPromptInjection(text: string): {
@@ -167,16 +179,13 @@ export class WhatsAppMessagingGateway {
       };
     }
 
-    let aiDraftText = 'Thank you for reaching out to AgriTrust. How can I assist with your wholesale produce order today?';
-    let riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' = 'LOW';
-
-    if (text.toLowerCase().includes('tomatoes') || text.toLowerCase().includes('inventory')) {
-      aiDraftText = 'I can check the current approved tomato inventory and availability for you. We currently have Grade-A Barbados Tomatoes in stock.';
-      riskLevel = 'LOW';
-    } else if (text.toLowerCase().includes('where is my order') || text.toLowerCase().includes('order')) {
-      aiDraftText = 'Your order #ORD-BAR-2026-901 is currently CONFIRMED and undergoing quality inspection at the Bridgetown Central Hub.';
-      riskLevel = 'LOW';
-    }
+    const agentResult = await generateCommunicationsAgentDraft({
+      conversationId: `wa-conv-${fromPhone.replace(/[^0-9]/g, '')}`,
+      fromPhone,
+      rawText: text,
+      contactType: contact.contactType,
+      linkedEntityId: contact.linkedEntityId,
+    });
 
     return {
       messageId: rawInbound.messageId,
@@ -184,13 +193,16 @@ export class WhatsAppMessagingGateway {
       text,
       contactType: contact.contactType,
       contactId: contact.contactId,
-      isPromptInjection: false,
-      aiDraftText,
-      aiRiskLevel: riskLevel,
-      requiresHumanApproval: true,
+      isPromptInjection: agentResult.isPromptInjectionAttempt,
+      aiDraftText: agentResult.draftText,
+      aiRiskLevel: agentResult.riskLevel,
+      requiresHumanApproval: agentResult.requiresHumanApproval,
       environment: rawInbound.environment,
       provider: rawInbound.provider,
       simulated: rawInbound.simulated,
+      aiToolCalls: agentResult.toolCalls,
+      aiBlocked: agentResult.blocked,
+      aiBlockReason: agentResult.blockReason,
     };
   }
 

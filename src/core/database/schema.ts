@@ -805,6 +805,10 @@ export interface FeatureFlags {
   ADVANCED_LOGISTICS: boolean;
   PUBLIC_TRACEABILITY: boolean;
   AUTO_PROCUREMENT: boolean;
+  WHATSAPP_AI_ASSIST: boolean;
+  WHATSAPP_AI_AUTONOMOUS_SEND: boolean;
+  WHATSAPP_AI_NEGOTIATION: boolean;
+  WHATSAPP_AI_ORDER_CREATION: boolean;
 }
 
 export interface Settlement {
