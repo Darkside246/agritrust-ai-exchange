@@ -23,33 +23,35 @@ export const AdminProductCatalogue: React.FC = () => {
   const [grade, setGrade] = useState<ProduceGrade>('Grade A');
   const [imageUrl, setImageUrl] = useState<string>('https://images.unsplash.com/photo-1582284540020-8acbe03f4924');
 
-  const refreshProducts = () => {
-    setProducts(AgriTrustDatabase.getProducts());
+  const refreshProducts = async () => {
+    try {
+      const res = await fetch('/api/products');
+      const data = await res.json();
+      if (data.success) setProducts(data.data);
+    } catch {
+      setProducts(AgriTrustDatabase.getProducts());
+    }
   };
 
-  const handleCreateProduct = (e: React.FormEvent) => {
+  const handleCreateProduct = async (e: React.FormEvent) => {
     e.preventDefault();
-
-    const createdProduct = AgriTrustDatabase.createProductManual(
-      {
-        name,
-        variety,
-        category,
-        description,
-        unit,
-        unitWeightKg,
-        pricePerUnit,
-        moqUnits,
-        availableUnits,
-        grade,
-        imageUrl,
-      },
-      'sys-admin'
-    );
-
-    refreshProducts();
-    setSuccessMsg(`Commercial Product '${createdProduct.name}' created! Associated Lot ${createdProduct.lotId} initialized in HIDDEN publication state.`);
-    setIsCreatingProduct(false);
+    try {
+      const res = await fetch('/api/admin/products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name, variety, category, description, unit,
+          unitWeightKg, pricePerUnit, moqUnits, availableUnits, grade, imageUrl,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Create failed');
+      await refreshProducts();
+      setSuccessMsg(`Commercial Product '${data.product.name}' created! Associated Lot ${data.product.lotId} initialized in HIDDEN publication state.`);
+      setIsCreatingProduct(false);
+    } catch (err: any) {
+      alert(`Product creation failed: ${err.message}`);
+    }
   };
 
   const marginCalc = AgriTrustDatabase.calculateLotProfitability('prod-manual', pricePerUnit, 1.60, 0.25);

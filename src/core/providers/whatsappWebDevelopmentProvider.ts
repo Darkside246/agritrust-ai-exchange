@@ -27,15 +27,21 @@ export class WhatsAppWebDevelopmentProvider implements IWhatsAppProvider {
       metaConnected: false,
       statusMessage: isConnected
         ? `WhatsApp Web Development Session Active (${meta.accountName || 'Connected'})`
-        : `WhatsApp Web Disconnected: Status is '${meta.status}'.`,
+        : `WhatsApp Web Disconnected: Status is '${meta.status}'.${meta.errorMessage ? ` (${meta.errorMessage})` : ''}`,
       lastCheckedAt: new Date().toISOString(),
     };
   }
 
+  /**
+   * Really sends through the connected browser session via
+   * WhatsAppWebSessionManager.sendRealMessage(). No fabricated success:
+   * if the session isn't connected or the send throws, this returns
+   * success: false with the real error.
+   */
   public async sendMessage(
     recipientPhone: string,
     text: string,
-    templateName?: string
+    _templateName?: string
   ): Promise<WhatsAppProviderMessageResult> {
     const meta = WhatsAppWebSessionManager.getSessionMetadata();
 
@@ -52,32 +58,61 @@ export class WhatsAppWebDevelopmentProvider implements IWhatsAppProvider {
       };
     }
 
-    const waWebMsgId = `waweb.msg.${Date.now()}.${Math.floor(Math.random() * 10000)}`;
+    try {
+      const result = await WhatsAppWebSessionManager.sendRealMessage(recipientPhone, text);
 
-    AuditLedger.logOperationalEvent(
-      'sys-admin',
-      'ADMIN',
-      'WHATSAPP_WEB_DISPATCH_MESSAGE',
-      `RECIPIENT:${recipientPhone}`,
-      `Dispatched message '${waWebMsgId}' via connected WhatsApp Web session to ${recipientPhone}.`
-    );
+      AuditLedger.logOperationalEvent(
+        'sys-admin',
+        'ADMIN',
+        'WHATSAPP_WEB_DISPATCH_MESSAGE',
+        `RECIPIENT:${recipientPhone}`,
+        `Dispatched real message '${result.id}' via connected WhatsApp Web session to ${recipientPhone}.`
+      );
 
-    return {
-      success: true,
-      providerMessageId: waWebMsgId,
-      deliveryStatus: 'SENT',
-      environment: 'development',
-      provider: 'whatsapp_web',
-      simulated: false,
-      rawPayload: {
+      return {
+        success: true,
+        providerMessageId: result.id,
+        deliveryStatus: 'SENT',
+        environment: 'development',
         provider: 'whatsapp_web',
-        recipientPhone,
-        text,
-        dispatchedAt: new Date().toISOString(),
-      },
-    };
+        simulated: false,
+        rawPayload: {
+          provider: 'whatsapp_web',
+          recipientPhone,
+          text,
+          dispatchedAt: new Date().toISOString(),
+        },
+      };
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      AuditLedger.logOperationalEvent(
+        'sys-admin',
+        'ADMIN',
+        'WHATSAPP_WEB_DISPATCH_FAILED',
+        `RECIPIENT:${recipientPhone}`,
+        `Real WhatsApp Web send failed: ${errorMessage}`
+      );
+      return {
+        success: false,
+        providerMessageId: '',
+        deliveryStatus: 'FAILED',
+        environment: 'development',
+        provider: 'whatsapp_web',
+        simulated: false,
+        errorCode: 500,
+        errorMessage,
+      };
+    }
   }
 
+  /**
+   * This method exists to satisfy IWhatsAppProvider for callers that already
+   * have a (fromPhone, text) pair - e.g. the messaging gateway, which is
+   * invoked BY the real inbound handler registered in server startup
+   * (see server.ts: WhatsAppWebSessionManager.onInboundMessage(...)).
+   * It does not itself listen for messages - it just wraps whatever real
+   * pair it's given into the standard result shape.
+   */
   public async receiveMessage(
     fromPhone: string,
     text: string
@@ -107,10 +142,15 @@ export class WhatsAppWebDevelopmentProvider implements IWhatsAppProvider {
   public async getMessageStatus(
     providerMessageId: string
   ): Promise<WhatsAppProviderMessageResult> {
+    // whatsapp-web.js exposes delivery/read receipts via the 'message_ack'
+    // event, not a pollable-by-ID status endpoint. We report SENT (the only
+    // thing we can honestly confirm synchronously) rather than fabricating
+    // DELIVERED/READ. Wiring 'message_ack' into a per-message store is the
+    // next step if delivery/read tracking becomes a real requirement.
     return {
       success: true,
       providerMessageId,
-      deliveryStatus: 'DELIVERED',
+      deliveryStatus: 'SENT',
       environment: 'development',
       provider: 'whatsapp_web',
       simulated: false,

@@ -58,7 +58,20 @@ export const App: React.FC = () => {
   // Cart state
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
 
-  const refreshProductsFromDatabase = () => {
+  const refreshProductsFromDatabase = async () => {
+    try {
+      const params = new URLSearchParams();
+      if (searchQuery) params.set('search', searchQuery);
+      const res = await fetch(`/api/products?${params.toString()}`);
+      const data = await res.json();
+      if (data.success) {
+        setProducts(data.data);
+        return;
+      }
+    } catch {
+      // fall through to in-memory fallback
+    }
+    // In-memory fallback (e.g. when server isn't running in dev)
     AgriTrustDatabase.initialize();
     const searchResult = AgriTrustDatabase.searchPublicMarketplace(searchQuery);
     setProducts([...searchResult.products]);
@@ -222,16 +235,20 @@ export const App: React.FC = () => {
 
         {currentView === 'BUYER_ONBOARDING' && (
           <BuyerOnboardingWizard
-            onComplete={(data) => {
-              const res = AgriTrustDatabase.createBuyerAccount(
-                data.email,
-                data.businessName,
-                data.contactName,
-                data.privatePhone,
-                data.privateAddress
-              );
-              alert(`Commercial Buyer Account Verified & Registered for '${res.profile.businessName}'. Navigating to Buyer Portal.`);
-              setCurrentView('BUYER_PORTAL');
+            onComplete={async (data) => {
+              try {
+                const res = await fetch('/api/auth/register/buyer', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(data),
+                });
+                const json = await res.json();
+                if (!json.success) throw new Error(json.error || 'Registration failed');
+                alert(`Commercial Buyer Account Registered for '${json.profile?.businessName || data.businessName}'. Navigating to Buyer Portal.`);
+                setCurrentView('BUYER_PORTAL');
+              } catch (err: any) {
+                alert(`Registration failed: ${err.message}`);
+              }
             }}
             onCancel={() => setCurrentView('ACCOUNT_SELECTION')}
           />
@@ -239,19 +256,20 @@ export const App: React.FC = () => {
 
         {currentView === 'FARMER_ONBOARDING' && (
           <FarmerOnboardingWizard
-            onComplete={(data) => {
-              const res = AgriTrustDatabase.createFarmerAccount(
-                data.email,
-                data.businessName,
-                data.contactName,
-                data.privatePhone,
-                data.privateAddress,
-                data.privateGpsLat,
-                data.privateGpsLng,
-                data.publicRegion
-              );
-              alert(`Producer Account Verified & Registered for '${res.profile.businessName}'. Navigating to Farmer Portal.`);
-              setCurrentView('FARMER_PORTAL');
+            onComplete={async (data) => {
+              try {
+                const res = await fetch('/api/auth/register/farmer', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(data),
+                });
+                const json = await res.json();
+                if (!json.success) throw new Error(json.error || 'Registration failed');
+                alert(`Producer Account Registered for '${json.profile?.businessName || data.businessName}'. Navigating to Farmer Portal.`);
+                setCurrentView('FARMER_PORTAL');
+              } catch (err: any) {
+                alert(`Registration failed: ${err.message}`);
+              }
             }}
             onCancel={() => setCurrentView('ACCOUNT_SELECTION')}
           />

@@ -32,33 +32,40 @@ export const SellerSupplyIntake: React.FC<SellerSupplyIntakeProps> = ({
   const [imageUrl, setImageUrl] = useState<string>('https://images.unsplash.com/photo-1592924357228-91a4daadcfea');
   const [submittedResult, setSubmittedResult] = useState<SupplySubmission | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    const submission = AgriTrustDatabase.createSupplySubmission(
-      {
-        commodity,
-        variety,
-        description,
-        expectedGrade,
-        estimatedQuantity,
-        unit,
-        minimumQuantity,
-        expectedHarvestDate,
-        availableFrom,
-        availableUntil,
-        expectedShelfLifeDays: shelfLifeDays,
-        growingMethod,
-        packagingType,
-        preferredCollectionMethod: collectionMethod,
-        additionalNotes,
-        images: [imageUrl],
-      },
-      sellerId
-    );
-
-    setSubmittedResult(submission);
-    if (onSuccess) onSuccess(submission);
+    try {
+      const res = await fetch('/api/seller/submissions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sellerId,
+          cropName: commodity,
+          variety,
+          description,
+          expectedGrade,
+          estimatedQuantity,
+          unit,
+          minimumQuantity,
+          harvest_date: expectedHarvestDate,
+          availableFrom,
+          availableUntil,
+          expectedShelfLifeDays: shelfLifeDays,
+          growingMethod,
+          packagingType,
+          preferredCollectionMethod: collectionMethod,
+          notes: additionalNotes,
+          images: [imageUrl],
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Submission failed');
+      setSubmittedResult(data.submission);
+      if (onSuccess) onSuccess(data.submission);
+    } catch (err: any) {
+      alert(`Submission failed: ${err.message}`);
+    }
   };
 
   if (submittedResult) {

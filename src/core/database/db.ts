@@ -109,7 +109,7 @@ import { MetaWhatsAppService } from '../services/metaWhatsAppService';
 import { MetaWebhookEngine } from '../security/metaWebhookEngine';
 import { WhatsAppMessagingGateway, ProcessedInboundMessage } from '../providers/whatsappMessagingGateway';
 import { WhatsAppProviderType, ProviderHealthStatus } from '../providers/whatsappProviderInterface';
-import { WhatsAppWebSessionManager, WhatsAppWebSessionMetadata } from '../providers/whatsappWebSessionManager';
+import { getWhatsAppWebSessionController, WhatsAppWebSessionMetadata } from '../providers/whatsappWebSessionRegistry';
 
 export class AgriTrustDatabase {
   private static users: Map<string, User> = new Map();
@@ -3146,7 +3146,7 @@ export class AgriTrustDatabase {
   public static startWhatsAppWebSession(adminUserId: string = 'sys-admin'): WhatsAppWebSessionMetadata {
     this.initialize();
     this.setWhatsAppProvider('whatsapp_web', adminUserId);
-    const meta = WhatsAppWebSessionManager.startSession(adminUserId);
+    const meta = getWhatsAppWebSessionController().startSession(adminUserId);
     this.whatsappAccount = {
       ...this.whatsappAccount,
       status: 'NOT_CONNECTED',
@@ -3155,27 +3155,31 @@ export class AgriTrustDatabase {
     return meta;
   }
 
-  public static confirmWhatsAppWebAuthentication(
-    accountName: string = 'Hasan (AgriTrust Dev)',
-    phone: string = '+1 (246) 555-0199',
-    adminUserId: string = 'sys-admin'
-  ): WhatsAppWebSessionMetadata {
+  /**
+   * Polls the real session state. There is no manual "confirm" step anymore -
+   * the browser session transitions to CONNECTED on its own the moment the
+   * phone actually scans the QR code (whatsapp-web.js 'ready' event). Callers
+   * (e.g. an admin UI polling for status) should call this repeatedly and
+   * reflect whatever status comes back, rather than trying to force CONNECTED.
+   */
+  public static syncWhatsAppWebAccountFromSession(): WhatsAppWebSessionMetadata {
     this.initialize();
-    const meta = WhatsAppWebSessionManager.confirmAuthentication(accountName, phone, adminUserId);
-    this.whatsappAccount = {
-      ...this.whatsappAccount,
-      status: 'CONNECTED',
-      phoneNumber: phone,
-      displayBusinessName: accountName,
-      connectedAt: meta.connectedAt,
-      webhookStatus: 'NOT_VERIFIED',
-    };
+    const meta = getWhatsAppWebSessionController().getSessionMetadata();
+    if (meta.status === 'CONNECTED') {
+      this.whatsappAccount = {
+        ...this.whatsappAccount,
+        status: 'CONNECTED',
+        phoneNumber: meta.maskedPhone || this.whatsappAccount.phoneNumber,
+        displayBusinessName: meta.accountName || this.whatsappAccount.displayBusinessName,
+        connectedAt: meta.connectedAt,
+      };
+    }
     return meta;
   }
 
-  public static disconnectWhatsAppWebSession(adminUserId: string = 'sys-admin'): WhatsAppWebSessionMetadata {
+  public static async disconnectWhatsAppWebSession(adminUserId: string = 'sys-admin'): Promise<WhatsAppWebSessionMetadata> {
     this.initialize();
-    const meta = WhatsAppWebSessionManager.disconnectSession(adminUserId);
+    const meta = await getWhatsAppWebSessionController().disconnectSession(adminUserId);
     this.whatsappAccount = {
       ...this.whatsappAccount,
       status: 'DISCONNECTED',
@@ -3186,7 +3190,7 @@ export class AgriTrustDatabase {
   }
 
   public static getWhatsAppWebSessionMetadata(): WhatsAppWebSessionMetadata {
-    return WhatsAppWebSessionManager.getSessionMetadata();
+    return getWhatsAppWebSessionController().getSessionMetadata();
   }
 }
 

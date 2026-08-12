@@ -8,36 +8,169 @@ import { FileSecurityManager } from '../core/security/fileSecurity';
 import { AIGovernanceEngine } from '../core/ai/aiGovernance';
 import { FeatureFlagManager } from '../core/config/featureFlags';
 
+// --- Node-only real implementations. These modules transitively import
+// whatsapp-web.js/puppeteer and @anthropic-ai/sdk, so they must ONLY ever be
+// imported from this file (the Express server entrypoint, run via
+// `npm run server` / tsx - never bundled by Vite for the browser).
+import { WhatsAppWebSessionManager } from '../core/providers/whatsappWebSessionManager';
+import { WhatsAppWebDevelopmentProvider } from '../core/providers/whatsappWebDevelopmentProvider';
+import { generateCommunicationsAgentDraft } from '../core/ai/communicationsAgent';
+import { registerWhatsAppWebSessionController } from '../core/providers/whatsappWebSessionRegistry';
+import { registerWhatsAppWebProvider } from '../core/providers/whatsappWebProviderRegistry';
+import { registerCommunicationsAgent } from '../core/providers/communicationsAgentRegistry';
+
+// Register real SQLite persistence — must be first so all subsequent
+// service init can write to a real database
+import * as SqliteDb from '../core/database/sqliteDb';
+import { registerPersistenceLayer, IPersistenceLayer } from '../core/database/persistenceRegistry';
+
+const sqliteLayer: IPersistenceLayer = {
+  getUser: SqliteDb.dbGetUser,
+  getUserByEmail: SqliteDb.dbGetUserByEmail,
+  createUser: SqliteDb.dbCreateUser,
+  getAllUsers: SqliteDb.dbGetAllUsers,
+  createFarmerProfile: SqliteDb.dbCreateFarmerProfile,
+  getFarmerProfile: SqliteDb.dbGetFarmerProfile,
+  getAllFarmerProfiles: SqliteDb.dbGetAllFarmerProfiles,
+  createBuyerProfile: SqliteDb.dbCreateBuyerProfile,
+  getBuyerProfile: SqliteDb.dbGetBuyerProfile,
+  getAllBuyerProfiles: SqliteDb.dbGetAllBuyerProfiles,
+  getPublishedProducts: SqliteDb.dbGetPublishedProducts,
+  getProduct: SqliteDb.dbGetProduct,
+  upsertProduct: SqliteDb.dbUpsertProduct,
+  getAllProducts: SqliteDb.dbGetAllProducts,
+  createOrder: SqliteDb.dbCreateOrder,
+  getOrder: SqliteDb.dbGetOrder,
+  getBuyerOrders: SqliteDb.dbGetBuyerOrders,
+  getAllOrders: SqliteDb.dbGetAllOrders,
+  updateOrderStatus: SqliteDb.dbUpdateOrderStatus,
+  addOrderItem: SqliteDb.dbAddOrderItem,
+  getOrderItems: SqliteDb.dbGetOrderItems,
+  createSupplySubmission: SqliteDb.dbCreateSupplySubmission,
+  getSupplySubmissions: SqliteDb.dbGetSupplySubmissions,
+  updateSupplySubmissionStatus: SqliteDb.dbUpdateSupplySubmissionStatus,
+  saveWhatsAppMessage: SqliteDb.dbSaveWhatsAppMessage,
+  getWhatsAppMessages: SqliteDb.dbGetWhatsAppMessages,
+  getAllWhatsAppMessages: SqliteDb.dbGetAllWhatsAppMessages,
+  upsertWhatsAppConversation: SqliteDb.dbUpsertWhatsAppConversation,
+  getWhatsAppConversations: SqliteDb.dbGetWhatsAppConversations,
+  appendAuditEvent: SqliteDb.dbAppendAuditEvent,
+  getAuditEvents: SqliteDb.dbGetAuditEvents,
+  rowExists: SqliteDb.dbRowExists,
+  countRows: SqliteDb.dbCountRows,
+};
+registerPersistenceLayer(sqliteLayer);
+
+registerWhatsAppWebSessionController(WhatsAppWebSessionManager);
+registerWhatsAppWebProvider(new WhatsAppWebDevelopmentProvider());
+registerCommunicationsAgent(generateCommunicationsAgentDraft);
+
+// Real inbound WhatsApp Web messages (Section 13, 24) -> the same
+// processInboundWhatsAppMessage() pipeline used by the dev/test HTTP routes.
+// Emergency-stop/pause is enforced inside generateCommunicationsAgentDraft
+// itself (AgriTrustDatabase.getAISystemPauseStatus()), so a paused system
+// still stores the message but never calls the model for it.
+WhatsAppWebSessionManager.onInboundMessage((fromPhone, text) => {
+  AgriTrustDatabase.processInboundWhatsAppMessage(fromPhone, text).then((result) => {
+    // Persist to real SQLite so messages survive server restart
+    const convId = `wa-conv-${fromPhone.replace(/[^0-9]/g, '').slice(-9)}`;
+    sqliteLayer.upsertWhatsAppConversation({
+      id: convId,
+      contact_phone: fromPhone,
+      contact_name: result.contactType,
+      account_type: result.contactType,
+      last_message_text: text.slice(0, 200),
+      last_activity_at: new Date().toISOString(),
+    });
+    sqliteLayer.saveWhatsAppMessage({
+      id: result.messageId,
+      conversation_id: convId,
+      direction: 'INBOUND',
+      sender_phone: fromPhone,
+      text,
+      provider: result.provider,
+      environment: result.environment,
+      ai_draft: result.aiDraftText,
+      ai_risk_level: result.aiRiskLevel,
+      requires_human_approval: result.requiresHumanApproval ? 1 : 0,
+      is_prompt_injection: result.isPromptInjection ? 1 : 0,
+    });
+  }).catch((err) => {
+    AuditLedger.logOperationalEvent(
+      'sys-admin',
+      'ADMIN',
+      'WHATSAPP_WEB_INBOUND_PROCESSING_FAILED',
+      `SENDER:${fromPhone}`,
+      `Failed to process real inbound WhatsApp Web message: ${err instanceof Error ? err.message : String(err)}`
+    );
+  });
+});
+
 const app = express();
 app.use(express.json());
 
-// Initialize Core Database
+// Initialize Core Database (in-memory layer for UI compatibility)
 AgriTrustDatabase.initialize();
+
+// Seed the SQLite database on first boot from existing seed data
+(function seedSqliteOnFirstBoot() {
+  const db = sqliteLayer;
+  if (db.countRows('products') === 0) {
+    console.log('[AgriTrust] SQLite: seeding products from in-memory seed data...');
+    const products = AgriTrustDatabase.getProducts();
+    for (const p of products) {
+      db.upsertProduct({
+        id: p.id, lot_id: p.lotId, name: p.name, variety: p.variety,
+        category: p.category, description: p.description, unit: p.unit,
+        price_per_unit: p.pricePerUnit, moq_units: p.moqUnits,
+        available_units: p.availableUnits, grade: p.grade,
+        availability_status: p.availabilityStatus, harvest_date: p.harvestDate,
+        traceability_status: 'VERIFIED',
+        image_url: p.imageUrl ?? null, published: 1,
+        farmer_id: null,
+      });
+    }
+    console.log(`[AgriTrust] SQLite: seeded ${products.length} products.`);
+  }
+
+  if (db.countRows('users') === 0) {
+    const farmerUser = AgriTrustDatabase.getUserById('usr-farmer-01');
+    if (farmerUser) {
+      db.createUser({ id: farmerUser.id, email: farmerUser.email, role: farmerUser.role as string, organisation_name: farmerUser.name });
+      const fp = AgriTrustDatabase.getFarmerProfileByUserId('usr-farmer-01');
+      if (fp) db.createFarmerProfile({ id: fp.id, user_id: 'usr-farmer-01', full_name: fp.contactName, farm_name: fp.businessName, location: fp.publicRegion, phone: fp.privatePhone });
+    }
+    const buyerUser = AgriTrustDatabase.getUserById('usr-buyer-01');
+    if (buyerUser) {
+      db.createUser({ id: buyerUser.id, email: buyerUser.email, role: buyerUser.role as string, organisation_name: buyerUser.name });
+      const bp = AgriTrustDatabase.getBuyerProfileByUserId('usr-buyer-01');
+      if (bp) db.createBuyerProfile({ id: bp.id, user_id: 'usr-buyer-01', organisation_name: bp.businessName, contact_name: bp.contactName, phone: bp.privatePhone, address: bp.privateAddress });
+    }
+    console.log('[AgriTrust] SQLite: seeded seed farmer/buyer accounts.');
+  }
+})();
 
 /**
  * GET /api/products
- * Returns product catalog with optional query filters (category, grade, search).
+ * Returns product catalog from real SQLite with optional query filters.
  */
 app.get('/api/products', (req: Request, res: Response): void => {
-  let products = AgriTrustDatabase.getProducts();
   const { category, grade, search } = req.query;
+  const rows = sqliteLayer.getPublishedProducts({
+    category: category as string,
+    grade: grade as string,
+    search: search as string,
+  });
 
-  if (category && typeof category === 'string' && category !== 'ALL') {
-    products = products.filter((p) => p.category === category);
-  }
-  if (grade && typeof grade === 'string' && grade !== 'ALL') {
-    products = products.filter((p) => p.grade === grade);
-  }
-  if (search && typeof search === 'string') {
-    const q = search.toLowerCase();
-    products = products.filter((p) =>
-      p.name.toLowerCase().includes(q) ||
-      p.variety.toLowerCase().includes(q) ||
-      p.lotId.toLowerCase().includes(q)
-    );
-  }
-
-  const sanitizedProducts = products.map((p) => PrivacyManager.sanitizeProductForPublic(p));
+  // Map SQLite snake_case rows to the camelCase shape the frontend expects
+  const sanitizedProducts = rows.map((r: any) => ({
+    id: r.id, lotId: r.lot_id, name: r.name, variety: r.variety,
+    category: r.category, description: r.description, unit: r.unit,
+    pricePerUnit: r.price_per_unit, moqUnits: r.moq_units,
+    availableUnits: r.available_units, grade: r.grade,
+    availabilityStatus: r.availability_status, harvestDate: r.harvest_date,
+    traceabilityStatus: r.traceability_status, imageUrl: r.image_url,
+  }));
   res.json({ success: true, count: sanitizedProducts.length, data: sanitizedProducts });
 });
 
@@ -169,16 +302,31 @@ app.post('/api/cart/validate', (req: Request, res: Response): void => {
  * Selling Price = TRUE LANDED COST / (1 - TARGET_MARGIN)
  */
 app.post('/api/margin/evaluate', (req: Request, res: Response): void => {
-  const { costs, proposedSellingPrice, targetMarginPercent } = req.body as {
-    costs: CostBreakdownInput;
+  const { costs: rawCosts, proposedSellingPrice, targetMarginPercent } = req.body as {
+    costs: Record<string, number>;
     proposedSellingPrice: number;
     targetMarginPercent?: number;
   };
 
-  if (!costs || typeof proposedSellingPrice !== 'number') {
+  if (!rawCosts || typeof proposedSellingPrice !== 'number') {
     res.status(400).json({ success: false, error: 'Missing costs or proposedSellingPrice' });
     return;
   }
+
+  // Normalise: accept both the engine's camelCase field names AND
+  // common shorthand keys sent by the frontend/tests
+  const costs: CostBreakdownInput = {
+    farmerProcurementCost:     rawCosts.farmerProcurementCost     ?? rawCosts.farmerCost           ?? 0,
+    gradingCost:               rawCosts.gradingCost               ?? rawCosts.grading              ?? 0,
+    packagingCost:             rawCosts.packagingCost             ?? rawCosts.packaging            ?? 0,
+    storageCost:               rawCosts.storageCost               ?? rawCosts.storage              ?? 0,
+    transportCost:             rawCosts.transportCost             ?? rawCosts.transportation       ?? rawCosts.transport ?? 0,
+    paymentProcessingCost:     rawCosts.paymentProcessingCost     ?? rawCosts.paymentProcessing    ?? 0,
+    platformCost:              rawCosts.platformCost              ?? rawCosts.platformCosts         ?? rawCosts.platform ?? 0,
+    expectedSpoilageLossCost:  rawCosts.expectedSpoilageLossCost  ?? rawCosts.expectedSpoilage     ?? rawCosts.spoilage  ?? 0,
+    riskReserveCost:           rawCosts.riskReserveCost           ?? rawCosts.riskReserve          ?? 0,
+    otherAllocatedCost:        rawCosts.otherAllocatedCost        ?? rawCosts.other                ?? 0,
+  };
 
   try {
     const evaluation = MarginEngine.evaluateMargin(
@@ -229,6 +377,12 @@ app.post('/api/auth/register/buyer', (req: Request, res: Response): void => {
     creditLimit || 25000
   );
 
+  // Persist to SQLite so registration survives server restart
+  if (!sqliteLayer.getUser(user.id)) {
+    sqliteLayer.createUser({ id: user.id, email: user.email, role: user.role as string, organisation_name: businessName });
+    sqliteLayer.createBuyerProfile({ id: profile.id, user_id: user.id, organisation_name: businessName, contact_name: contactName, phone: privatePhone as string | undefined, address: privateAddress as string | undefined });
+  }
+
   const session = AuthManager.createSession(user);
 
   AuditLedger.logOperationalEvent(
@@ -238,6 +392,7 @@ app.post('/api/auth/register/buyer', (req: Request, res: Response): void => {
     `BUYER_PROFILE:${profile.id}`,
     `New commercial buyer registered: ${businessName}`
   );
+  sqliteLayer.appendAuditEvent({ id: `aud-${Date.now()}`, actor: user.id, actor_role: 'BUYER', action: 'REGISTER_BUYER', entity_ref: profile.id, details: `Buyer: ${businessName}` });
 
   res.json({
     success: true,
@@ -254,6 +409,18 @@ app.post('/api/auth/register/buyer', (req: Request, res: Response): void => {
 app.post('/api/seller/submissions', (req: Request, res: Response): void => {
   try {
     const submission = AgriTrustDatabase.createSupplySubmission(req.body, req.body.sellerId || 'fp-01');
+    // Persist to SQLite
+    sqliteLayer.createSupplySubmission({
+      id: submission.id,
+      farmer_id: req.body.sellerId || 'fp-01',
+      crop_name: req.body.cropName || req.body.crop_name || 'Unknown',
+      variety: req.body.variety,
+      estimated_quantity: req.body.estimatedQuantity ?? req.body.estimated_quantity,
+      unit: req.body.unit ?? 'kg',
+      harvest_date: req.body.harvestDate ?? req.body.harvest_date,
+      asking_price: req.body.askingPrice ?? req.body.asking_price,
+      notes: req.body.notes,
+    });
     res.json({ success: true, submission });
   } catch (err: any) {
     res.status(400).json({ success: false, error: err.message });
@@ -291,6 +458,19 @@ app.post('/api/admin/submissions/:id/approve', (req: Request, res: Response): vo
 app.post('/api/admin/products', (req: Request, res: Response): void => {
   try {
     const product = AgriTrustDatabase.createProductManual(req.body, 'sys-admin');
+    // Persist to SQLite
+    sqliteLayer.upsertProduct({
+      id: product.id, lot_id: product.lotId, name: product.name,
+      variety: product.variety, category: product.category,
+      description: product.description, unit: product.unit,
+      price_per_unit: product.pricePerUnit, moq_units: product.moqUnits,
+      available_units: product.availableUnits, grade: product.grade,
+      availability_status: product.availabilityStatus,
+      harvest_date: product.harvestDate,
+      traceability_status: 'VERIFIED',
+      image_url: product.imageUrl,
+      published: 1,
+    });
     res.json({ success: true, product });
   } catch (err: any) {
     res.status(400).json({ success: false, error: err.message });
@@ -346,6 +526,12 @@ app.post('/api/auth/register/farmer', (req: Request, res: Response): void => {
     privateGpsLng || -59.5432,
     publicRegion || 'Western Agricultural Zone 4'
   );
+
+  // Persist to SQLite
+  if (!sqliteLayer.getUser(user.id)) {
+    sqliteLayer.createUser({ id: user.id, email: user.email, role: user.role as string, organisation_name: businessName });
+    sqliteLayer.createFarmerProfile({ id: profile.id, user_id: user.id, full_name: contactName, farm_name: businessName, location: publicRegion, phone: privatePhone as string | undefined });
+  }
 
   const session = AuthManager.createSession(user);
 
@@ -433,30 +619,51 @@ app.post('/api/buyer/orders', (req: Request, res: Response): void => {
     return;
   }
 
+  // Server-side recalculation — never trust client totals (Section 50/51)
   const subtotal = items.reduce((acc: number, item: any) => acc + (item.subtotal || 0), 0);
   const logFee = typeof logisticsFee === 'number' ? logisticsFee : 45.00;
   const platformFee = Math.round(subtotal * 0.025 * 100) / 100;
   const total = subtotal + logFee + platformFee;
+  const orderId = `ORD-2026-${Math.floor(100000 + Math.random() * 900000)}`;
+
+  // Validate each line item exists and has sufficient inventory
+  for (const item of items) {
+    const product = sqliteLayer.getProduct(item.productId) || AgriTrustDatabase.getProductById(item.productId);
+    if (!product) {
+      res.status(400).json({ success: false, error: `Product ${item.productId} not found` });
+      return;
+    }
+    if (item.quantity < (product.moq_units ?? product.moqUnits ?? 1)) {
+      res.status(400).json({ success: false, error: `Quantity for ${product.name} is below minimum order quantity` });
+      return;
+    }
+  }
 
   const newOrder = AgriTrustDatabase.saveOrder({
-    id: `ORD-2026-${Math.floor(100000 + Math.random() * 900000)}`,
-    buyerId,
-    items,
-    subtotal,
-    logisticsFee: logFee,
-    platformFee,
-    tax: 0.00,
-    total,
-    status: 'CONFIRMED',
+    id: orderId, buyerId, items, subtotal, logisticsFee: logFee,
+    platformFee, tax: 0.00, total, status: 'CONFIRMED',
     createdAt: new Date().toISOString(),
   });
 
+  // Persist to SQLite
+  sqliteLayer.createOrder({ id: orderId, buyer_id: buyerId, total, item_count: items.length });
+  for (const item of items) {
+    sqliteLayer.addOrderItem({
+      id: `oi-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      order_id: orderId, product_id: item.productId, product_name: item.name || item.productId,
+      quantity: item.quantity, unit: item.unit || 'kg', price_per_unit: item.pricePerUnit,
+      subtotal: item.subtotal,
+    });
+  }
+  sqliteLayer.appendAuditEvent({
+    id: `aud-ord-${Date.now()}`, actor: buyerId, actor_role: 'BUYER',
+    action: 'CREATE_ORDER', entity_ref: orderId,
+    details: `Order total $${total.toFixed(2)}, ${items.length} items`,
+  });
+
   AuditLedger.logOperationalEvent(
-    buyerId,
-    'BUYER',
-    'CREATE_ORDER',
-    `ORDER:${newOrder.id}`,
-    `Buyer placed wholesale order for total landed price $${total.toFixed(2)}`
+    buyerId, 'BUYER', 'CREATE_ORDER', `ORDER:${newOrder.id}`,
+    `Buyer placed wholesale order for total $${total.toFixed(2)}`
   );
 
   res.json({ success: true, order: newOrder });
@@ -824,14 +1031,17 @@ app.get('/api/admin/ai/runs', (req: Request, res: Response): void => {
 
 /**
  * GET /api/audit/logs
+ * Reads from both SQLite (persistent) and in-memory audit ledger
  */
 app.get('/api/audit/logs', (req: Request, res: Response): void => {
   const operationalLogs = AuditLedger.getOperationalLogs();
+  const sqliteLogs = sqliteLayer.getAuditEvents(200);
   const vaultStatus = AuditLedger.verifySecurityVaultIntegrity();
 
   res.json({
     success: true,
     operationalLogs,
+    persistedLogs: sqliteLogs,
     securityVaultIntegrity: vaultStatus,
   });
 });
@@ -853,7 +1063,119 @@ app.get('/api/seed', (req: Request, res: Response): void => {
   });
 });
 
+/**
+ * POST /api/admin/whatsapp/connect
+ * Launches (or re-attaches to) the real WhatsApp Web browser session.
+ * Does NOT wait for CONNECTED - the client should poll GET status for the
+ * real QR code image and connection state.
+ */
+app.post('/api/admin/whatsapp/connect', (req: Request, res: Response): void => {
+  const adminUserId = (req.headers['x-admin-id'] as string) || 'sys-admin';
+  try {
+    const meta = AgriTrustDatabase.startWhatsAppWebSession(adminUserId);
+    res.json({ success: true, session: meta });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/admin/whatsapp/status
+ * Real, current session status - including the real QR data URL while
+ * QR_REQUIRED, and real account/phone info once CONNECTED. Poll this,
+ * don't cache it client-side.
+ */
+app.get('/api/admin/whatsapp/status', (req: Request, res: Response): void => {
+  const meta = AgriTrustDatabase.syncWhatsAppWebAccountFromSession();
+  res.json({ success: true, session: meta });
+});
+
+/**
+ * POST /api/admin/whatsapp/disconnect
+ */
+app.post('/api/admin/whatsapp/disconnect', async (req: Request, res: Response): Promise<void> => {
+  const adminUserId = (req.headers['x-admin-id'] as string) || 'sys-admin';
+  try {
+    const meta = await AgriTrustDatabase.disconnectWhatsAppWebSession(adminUserId);
+    res.json({ success: true, session: meta });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/admin/whatsapp/conversations
+ * Reads from real SQLite — persists across restarts
+ */
+app.get('/api/admin/whatsapp/conversations', (req: Request, res: Response): void => {
+  const sqliteConvs = sqliteLayer.getWhatsAppConversations();
+  const memConvs = AgriTrustDatabase.getWhatsAppConversations();
+  // Merge: SQLite is authoritative, in-memory fills gaps for dev/test data
+  const idSet = new Set(sqliteConvs.map((c: any) => c.id));
+  const merged = [...sqliteConvs, ...memConvs.filter((c: any) => !idSet.has(c.id))];
+  res.json({ success: true, conversations: merged });
+});
+
+/**
+ * GET /api/admin/whatsapp/conversations/:conversationId/messages
+ * Reads from real SQLite — persists across restarts
+ */
+app.get('/api/admin/whatsapp/conversations/:conversationId/messages', (req: Request, res: Response): void => {
+  const { conversationId } = req.params;
+  const sqliteMsgs = sqliteLayer.getWhatsAppMessages(conversationId);
+  const memMsgs = AgriTrustDatabase.getWhatsAppMessages(conversationId);
+  const idSet = new Set(sqliteMsgs.map((m: any) => m.id));
+  const merged = [...sqliteMsgs, ...memMsgs.filter((m: any) => !idSet.has(m.id))];
+  res.json({ success: true, messages: merged });
+});
+
+/**
+ * POST /api/admin/whatsapp/send
+ * Human-approved real send through the connected WhatsApp Web session.
+ * Body: { toPhone, text, templateName? }
+ */
+app.post('/api/admin/whatsapp/send', async (req: Request, res: Response): Promise<void> => {
+  const { toPhone, text, templateName } = req.body;
+  if (!toPhone || !text) {
+    res.status(400).json({ success: false, error: 'toPhone and text are required.' });
+    return;
+  }
+  try {
+    const result = await AgriTrustDatabase.dispatchOutboundWhatsAppMessage(toPhone, text, templateName);
+    res.json({ success: result.success, result });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/admin/whatsapp/emergency-stop
+ */
+app.post('/api/admin/whatsapp/emergency-stop', (req: Request, res: Response): void => {
+  const adminUserId = (req.headers['x-admin-id'] as string) || 'sys-admin';
+  const paused = AgriTrustDatabase.pauseAllWhatsAppAI(adminUserId);
+  res.json({ success: true, aiSystemPaused: paused });
+});
+
+/**
+ * POST /api/admin/whatsapp/resume-ai
+ */
+app.post('/api/admin/whatsapp/resume-ai', (req: Request, res: Response): void => {
+  const adminUserId = (req.headers['x-admin-id'] as string) || 'sys-admin';
+  const resumed = AgriTrustDatabase.resumeAllWhatsAppAI(adminUserId);
+  res.json({ success: true, aiSystemPaused: !resumed });
+});
+
 const PORT = process.env.PORT || 5000;
+
+// Global error handler — must be registered AFTER all routes.
+// Catches synchronous throws in route handlers so the process doesn't die.
+app.use((err: any, req: Request, res: Response, _next: any) => {
+  console.error('[AgriTrust] Unhandled route error:', err?.message || err);
+  if (!res.headersSent) {
+    res.status(500).json({ success: false, error: 'Internal server error', detail: err?.message });
+  }
+});
 app.listen(PORT, () => {
   console.log(`[AgriTrust Core API] Server running on port ${PORT}`);
 });

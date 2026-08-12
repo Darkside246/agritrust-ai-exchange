@@ -60,15 +60,22 @@ export class MetaWhatsAppService {
     }
 
     try {
-      // In real Node/browser runtime, execute fetch request to Graph API v20.0
       const endpoint = `https://graph.facebook.com/v20.0/${phoneNumberId}?fields=display_phone_number,verified_name,code_verification_status,quality_rating`;
 
-      // Simulating real fetch behavior with fallback check
-      if (accessToken.startsWith('invalid_') || accessToken === 'BAD_TOKEN') {
+      const response = await fetch(endpoint, {
+        headers: { 'Authorization': `Bearer ${accessToken}` },
+      });
+      const body = await response.json() as any;
+
+      if (!response.ok) {
+        const code = body?.error?.code;
+        const status = (code === 190 || code === 102) ? 'TOKEN_ERROR'
+          : code === 200 ? 'PERMISSION_ERROR'
+          : 'CONNECTION_ERROR';
         return {
           isValid: false,
-          status: 'TOKEN_ERROR',
-          errorMessage: 'Meta API Error #190: Invalid OAuth access token.',
+          status,
+          errorMessage: body?.error?.message || `Meta API HTTP ${response.status}`,
         };
       }
 
@@ -77,15 +84,15 @@ export class MetaWhatsAppService {
         'SYSTEM',
         'VERIFY_META_GRAPH_API',
         `GRAPH_API:${phoneNumberId}`,
-        `Successfully verified Meta Graph API v20.0 connection for Phone ID ${phoneNumberId}.`
+        `Verified Meta Graph API v20.0 connection for Phone ID ${phoneNumberId}.`
       );
 
       return {
         isValid: true,
         status: 'CONNECTED',
-        phoneNumber: '+1 (246) 555-0199',
-        displayBusinessName: 'AgriTrust Wholesale',
-        wabaId: wabaId || 'waba-2026-real-001',
+        phoneNumber: body.display_phone_number,
+        displayBusinessName: body.verified_name,
+        wabaId: wabaId || undefined,
       };
     } catch (err: any) {
       return {
@@ -135,25 +142,57 @@ export class MetaWhatsAppService {
       };
     }
 
-    const mockProviderId = `wmid.HBgM${Date.now()}${Math.floor(Math.random() * 10000)}==`;
+    try {
+      const endpoint = `https://graph.facebook.com/v20.0/${phoneNumberId}/messages`;
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify(payload),
+      });
 
-    AuditLedger.logOperationalEvent(
-      'ai-comm-agent',
-      'ADMIN',
-      'SEND_META_WHATSAPP_MESSAGE',
-      `RECIPIENT:${recipientPhone}`,
-      `Dispatched WhatsApp Cloud API message. Provider ID: ${mockProviderId}`
-    );
+      const body = await response.json() as any;
 
-    return {
-      success: true,
-      providerMessageId: mockProviderId,
-      deliveryStatus: 'SENT',
-      rawResponseBody: {
-        messaging_product: 'whatsapp',
-        contacts: [{ input: recipientPhone, wa_id: recipientPhone.replace(/[^0-9]/g, '') }],
-        messages: [{ id: mockProviderId }],
-      },
-    };
+      if (!response.ok) {
+        const errMsg = body?.error?.message || `Meta API HTTP ${response.status}`;
+        AuditLedger.logOperationalEvent(
+          'ai-comm-agent', 'ADMIN', 'SEND_META_WHATSAPP_FAILED',
+          `RECIPIENT:${recipientPhone}`, `Meta Cloud API send failed: ${errMsg}`
+        );
+        return {
+          success: false,
+          deliveryStatus: 'FAILED',
+          errorCode: response.status,
+          errorMessage: errMsg,
+        };
+      }
+
+      const providerMessageId = body?.messages?.[0]?.id || `meta-${Date.now()}`;
+      AuditLedger.logOperationalEvent(
+        'ai-comm-agent', 'ADMIN', 'SEND_META_WHATSAPP_MESSAGE',
+        `RECIPIENT:${recipientPhone}`,
+        `Meta Cloud API message dispatched. Provider ID: ${providerMessageId}`
+      );
+
+      return {
+        success: true,
+        providerMessageId,
+        deliveryStatus: 'SENT',
+        rawResponseBody: body,
+      };
+    } catch (err: any) {
+      AuditLedger.logOperationalEvent(
+        'ai-comm-agent', 'ADMIN', 'SEND_META_WHATSAPP_ERROR',
+        `RECIPIENT:${recipientPhone}`, `Meta Cloud API network error: ${err?.message}`
+      );
+      return {
+        success: false,
+        deliveryStatus: 'FAILED',
+        errorCode: 503,
+        errorMessage: `Meta Cloud API network error: ${err?.message}`,
+      };
+    }
   }
 }

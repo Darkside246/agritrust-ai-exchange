@@ -5,6 +5,12 @@ import { MetaWhatsAppService } from '../core/services/metaWhatsAppService';
 import { MetaWebhookEngine } from '../core/security/metaWebhookEngine';
 import { AuditLedger } from '../core/audit/auditLedger';
 
+// Tests 3, 4, 8, 9 make REAL HTTP calls to graph.facebook.com and require a
+// live WABA with valid credentials. They are skipped unless
+// REAL_META_TEST=1 is set in the environment. Without it, asserting
+// 'CONNECTED' here would be asserting a lie - we no longer fake Meta responses.
+const RUN_LIVE_META = !!process.env.REAL_META_TEST;
+
 describe('REAL META WHATSAPP BUSINESS CLOUD API INTEGRATION ACCEPTANCE TESTS', () => {
   beforeEach(() => {
     AgriTrustDatabase.initialize();
@@ -19,48 +25,52 @@ describe('REAL META WHATSAPP BUSINESS CLOUD API INTEGRATION ACCEPTANCE TESTS', (
   });
 
   it('Test 1: Default Account Status when Unconfigured (Section 9 & 11)', () => {
-    // Reset vault
     MetaSecretVault.updateCredentialsConfig({ accessToken: undefined, phoneNumberId: undefined }, 'sys-admin');
-    const isConfigured = MetaSecretVault.isConfigured();
-    expect(isConfigured).toBe(false);
+    expect(MetaSecretVault.isConfigured()).toBe(false);
   });
 
   it('Test 2: Secret Vault Credential Storage & AI Isolation Guardrail (Section 7 & 25)', () => {
     const aiVaultStatus = MetaSecretVault.getSanitizedVaultStatusForAI();
     expect(aiVaultStatus.isConfigured).toBe(true);
     expect(aiVaultStatus.hasAccessToken).toBe(true);
-    // Crucially: raw credentials object is not exposed in AI status wrapper
     expect((aiVaultStatus as any).accessToken).toBeUndefined();
     expect((aiVaultStatus as any).metaAppSecret).toBeUndefined();
   });
 
-  it('Test 3: Real Meta Graph API v20.0 Connection Verification (Section 8 & 48)', async () => {
+  it('Test 3: Real Meta Graph API v20.0 Connection Verification — requires REAL_META_TEST=1', async () => {
+    if (!RUN_LIVE_META) {
+      // Without live Meta credentials the real fetch to graph.facebook.com
+      // will correctly return CONNECTION_ERROR or TOKEN_ERROR - not CONNECTED.
+      // That is the correct, honest behavior. Skip rather than assert a lie.
+      console.log('Skipped: set REAL_META_TEST=1 with real WABA credentials to run this test.');
+      return;
+    }
     const res = await MetaWhatsAppService.verifyMetaApiConnection();
     expect(res.isValid).toBe(true);
     expect(res.status).toBe('CONNECTED');
-    expect(res.displayBusinessName).toBe('AgriTrust Wholesale');
+    expect(res.displayBusinessName).toBeTruthy();
   });
 
-  it('Test 4: Meta Graph API Token Error Handling (Section 9)', async () => {
+  it('Test 4: Meta Graph API returns non-CONNECTED status for invalid/test tokens', async () => {
     MetaSecretVault.updateCredentialsConfig({ accessToken: 'BAD_TOKEN' }, 'sys-admin');
     const res = await MetaWhatsAppService.verifyMetaApiConnection();
     expect(res.isValid).toBe(false);
-    expect(res.status).toBe('TOKEN_ERROR');
-    expect(res.errorMessage).toContain('Invalid OAuth access token');
+    // Real Meta API returns 400 with error.code 190 for invalid token.
+    // Our real fetch translates that to TOKEN_ERROR. In CI without network
+    // access the fetch itself throws and we get CONNECTION_ERROR.
+    // Either way, isValid must be false - the important assertion.
+    expect(['TOKEN_ERROR', 'CONNECTION_ERROR']).toContain(res.status);
   });
 
   it('Test 5: Meta Webhook GET Verification Challenge (Section 13)', () => {
-    const query = {
+    const res = MetaWebhookEngine.verifyWebhookChallenge({
       'hub.mode': 'subscribe',
       'hub.verify_token': 'agritrust_meta_verify_token_2026',
       'hub.challenge': 'CHALLENGE_STRING_12345',
-    };
-
-    const res = MetaWebhookEngine.verifyWebhookChallenge(query);
+    });
     expect(res.isValid).toBe(true);
     expect(res.challenge).toBe('CHALLENGE_STRING_12345');
 
-    // Mismatched token rejection
     const badRes = MetaWebhookEngine.verifyWebhookChallenge({
       'hub.mode': 'subscribe',
       'hub.verify_token': 'WRONG_TOKEN',
@@ -77,26 +87,34 @@ describe('REAL META WHATSAPP BUSINESS CLOUD API INTEGRATION ACCEPTANCE TESTS', (
   it('Test 7: Meta Event ID Deduplication (Section 16 & 42)', () => {
     MetaWebhookEngine.resetEventDeduplication();
     const eventId = 'wmid.hb_evt_00998811';
-
-    const isDup1 = MetaWebhookEngine.isDuplicateEvent(eventId);
-    expect(isDup1).toBe(false);
-
-    const isDup2 = MetaWebhookEngine.isDuplicateEvent(eventId);
-    expect(isDup2).toBe(true);
+    expect(MetaWebhookEngine.isDuplicateEvent(eventId)).toBe(false);
+    expect(MetaWebhookEngine.isDuplicateEvent(eventId)).toBe(true);
   });
 
-  it('Test 8: Real Outbound WhatsApp Message Dispatch via Meta Service (Section 18 & 57)', async () => {
-    const res = await AgriTrustDatabase.sendRealWhatsAppMessage('+12465550199', 'Test message payload');
-    expect(res.success).toBe(true);
-    expect(res.providerMessageId).toContain('wmid.');
-    expect(res.status).toBe('SENT');
+  it('Test 8: Outbound send correctly fails without real Meta credentials — requires REAL_META_TEST=1 for live test', async () => {
+    if (RUN_LIVE_META) {
+      const res = await AgriTrustDatabase.sendRealWhatsAppMessage('+12465550199', 'Test message payload');
+      expect(res.success).toBe(true);
+      expect(res.providerMessageId).toBeTruthy();
+    } else {
+      // Without real Meta credentials the send must fail, not fabricate success
+      const res = await AgriTrustDatabase.sendRealWhatsAppMessage('+12465550199', 'Test message payload');
+      expect(res.success).toBe(false);
+      // sendRealWhatsAppMessage returns { status } not { deliveryStatus }
+      expect(res.status).toBeDefined();
+    }
   });
 
-  it('Test 9: Database Connection & Verification State Pipeline (Section 8 & 61)', async () => {
-    const acc = await AgriTrustDatabase.verifyAndConnectMetaWhatsApp('admin-hasan');
-    expect(acc.status).toBe('CONNECTED');
-    expect(acc.webhookStatus).toBe('VERIFIED');
-    expect(acc.lastHealthCheck).toBeDefined();
+  it('Test 9: verifyAndConnectMetaWhatsApp returns non-CONNECTED without real credentials', async () => {
+    if (RUN_LIVE_META) {
+      const acc = await AgriTrustDatabase.verifyAndConnectMetaWhatsApp('admin-hasan');
+      expect(acc.status).toBe('CONNECTED');
+    } else {
+      // Without real Meta credentials the account status must not be CONNECTED.
+      // Any other status (CONNECTION_ERROR, NOT_CONNECTED) is acceptable and honest.
+      const acc = await AgriTrustDatabase.verifyAndConnectMetaWhatsApp('admin-hasan');
+      expect(acc.status).not.toBe('CONNECTED');
+    }
   });
 
   it('Test 10: Security Vault Integrity Protection', () => {
@@ -104,3 +122,4 @@ describe('REAL META WHATSAPP BUSINESS CLOUD API INTEGRATION ACCEPTANCE TESTS', (
     expect(vault.intact).toBe(true);
   });
 });
+

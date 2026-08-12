@@ -57,6 +57,22 @@ export const AdminWhatsAppWorkspace: React.FC = () => {
   // WhatsApp Web Session & Simulator States (Section 6, 7, 13, 29, 30, 40)
   const [showWebConnectModal, setShowWebConnectModal] = useState<boolean>(false);
   const [webSessionMeta, setWebSessionMeta] = useState(AgriTrustDatabase.getWhatsAppWebSessionMetadata());
+
+  useEffect(() => {
+    if (!showWebConnectModal) return;
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/admin/whatsapp/status');
+        const data = await res.json();
+        if (data.success) setWebSessionMeta(data.session);
+      } catch (err) {
+        console.error('Failed to poll WhatsApp Web status:', err);
+      }
+    };
+    poll();
+    const interval = setInterval(poll, 2000);
+    return () => clearInterval(interval);
+  }, [showWebConnectModal]);
   const [devSenderPhone, setDevSenderPhone] = useState<string>('+1 (246) 555-0199');
   const [devInputText, setDevInputText] = useState<string>('Do you have 500kg of tomatoes available?');
   const [devPipelineResult, setDevPipelineResult] = useState<any | null>(null);
@@ -783,11 +799,19 @@ export const AdminWhatsAppWorkspace: React.FC = () => {
                 Development Provider
               </button>
               <button
-                onClick={() => {
-                  const meta = AgriTrustDatabase.startWhatsAppWebSession('admin-hasan');
-                  setWebSessionMeta(meta);
+                onClick={async () => {
                   setDevProviderType('whatsapp_web');
                   setShowWebConnectModal(true);
+                  try {
+                    const res = await fetch('/api/admin/whatsapp/connect', {
+                      method: 'POST',
+                      headers: { 'x-admin-id': 'admin-hasan' },
+                    });
+                    const data = await res.json();
+                    if (data.success) setWebSessionMeta(data.session);
+                  } catch (err) {
+                    console.error('Failed to start WhatsApp Web session:', err);
+                  }
                 }}
                 className={`btn btn-sm ${devProviderType === 'whatsapp_web' ? 'btn-primary' : 'btn-secondary'}`}
               >
@@ -999,10 +1023,28 @@ export const AdminWhatsAppWorkspace: React.FC = () => {
                 STATUS: {webSessionMeta.status}
               </div>
 
-              {webSessionMeta.status === 'QR_REQUIRED' && (
-                <div style={{ padding: '1rem', backgroundColor: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: '8px', maxWidth: '360px', width: '100%', wordBreak: 'break-all', fontFamily: 'monospace', fontSize: '0.7rem' }}>
-                  <div style={{ fontWeight: 'bold', marginBottom: '0.5rem', color: '#334155' }}>[ LIVE QR STREAM PAYLOAD ]</div>
-                  {webSessionMeta.qrCodeData}
+              {webSessionMeta.status === 'QR_REQUIRED' && webSessionMeta.qrCodeDataUrl && (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
+                  <img
+                    src={webSessionMeta.qrCodeDataUrl}
+                    alt="Scan with WhatsApp on your phone"
+                    style={{ width: 240, height: 240, border: '1px solid #cbd5e1', borderRadius: 8 }}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                    Open WhatsApp on your phone → Settings → Linked Devices → Link a Device
+                  </div>
+                </div>
+              )}
+
+              {(webSessionMeta.status === 'STARTING' || webSessionMeta.status === 'AUTHENTICATING') && (
+                <div style={{ fontSize: '0.8125rem', color: '#64748b' }}>
+                  {webSessionMeta.status === 'STARTING' ? 'Launching browser session…' : 'Phone scanned - finishing authentication…'}
+                </div>
+              )}
+
+              {(webSessionMeta.status === 'BROWSER_ERROR' || webSessionMeta.status === 'CONNECTION_ERROR') && (
+                <div style={{ padding: '0.75rem', backgroundColor: 'rgba(239, 68, 68, 0.1)', border: '1px solid var(--status-danger)', borderRadius: 'var(--radius-sm)', color: 'var(--status-danger)', fontSize: '0.8125rem', maxWidth: 360 }}>
+                  {webSessionMeta.errorMessage || 'Connection error.'}
                 </div>
               )}
 
@@ -1019,22 +1061,22 @@ export const AdminWhatsAppWorkspace: React.FC = () => {
             {/* Action Buttons */}
             <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center' }}>
               {webSessionMeta.status !== 'CONNECTED' ? (
-                <button
-                  onClick={() => {
-                    const confirmed = AgriTrustDatabase.confirmWhatsAppWebAuthentication('Hasan (AgriTrust Dev)', '+1 (246) 555-0199', 'admin-hasan');
-                    setWebSessionMeta(confirmed);
-                    alert(`✓ Live Session Authenticated!\nAccount: ${confirmed.accountName}\nStatus: CONNECTED`);
-                  }}
-                  className="btn btn-primary btn-md"
-                >
-                  <CheckCircle2 size={16} /> [ Confirm Mobile Scan ]
-                </button>
+                <div style={{ fontSize: '0.75rem', color: '#64748b', alignSelf: 'center' }}>
+                  Waiting for a real scan - this updates automatically once your phone connects.
+                </div>
               ) : (
                 <button
-                  onClick={() => {
-                    const disc = AgriTrustDatabase.disconnectWhatsAppWebSession('admin-hasan');
-                    setWebSessionMeta(disc);
-                    alert('WhatsApp Web browser session disconnected.');
+                  onClick={async () => {
+                    try {
+                      const res = await fetch('/api/admin/whatsapp/disconnect', {
+                        method: 'POST',
+                        headers: { 'x-admin-id': 'admin-hasan' },
+                      });
+                      const data = await res.json();
+                      if (data.success) setWebSessionMeta(data.session);
+                    } catch (err) {
+                      console.error('Failed to disconnect WhatsApp Web session:', err);
+                    }
                   }}
                   className="btn btn-sm"
                   style={{ backgroundColor: 'var(--status-danger)', color: '#fff', border: 'none' }}
