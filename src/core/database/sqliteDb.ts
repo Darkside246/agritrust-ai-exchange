@@ -204,6 +204,12 @@ function initSchema(): void {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS admin_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_products_published ON products(published);
     CREATE INDEX IF NOT EXISTS idx_orders_buyer ON orders(buyer_id);
     CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_conv ON whatsapp_messages(conversation_id);
@@ -474,6 +480,24 @@ export function dbGetAuditEvents(limit = 500) {
 }
 
 // ─── Seed helpers ─────────────────────────────────────────────────────────────
+
+export function dbGetSetting(key: string): string | null {
+  const row = getDb().prepare('SELECT value FROM admin_settings WHERE key = ?').get(key) as any;
+  return row ? row.value : null;
+}
+
+export function dbSetSetting(key: string, value: string): void {
+  getDb().prepare(`
+    INSERT INTO admin_settings (key, value)
+    VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=datetime('now')
+  `).run(key, value);
+}
+
+export function dbGetAllSettings(): Record<string, string> {
+  const rows = getDb().prepare('SELECT key, value FROM admin_settings').all() as any[];
+  return Object.fromEntries(rows.map((r: any) => [r.key, r.value]));
+}
 
 export function dbRowExists(table: string, id: string): boolean {
   const r = getDb().prepare(`SELECT id FROM ${table} WHERE id = ?`).get(id);

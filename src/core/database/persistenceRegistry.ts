@@ -54,6 +54,11 @@ export interface IPersistenceLayer {
   appendAuditEvent(e: any): void;
   getAuditEvents(limit?: number): any[];
 
+  // Admin settings
+  getSetting(key: string): string | null;
+  setSetting(key: string, value: string): void;
+  getAllSettings(): Record<string, string>;
+
   // Helpers
   rowExists(table: string, id: string): boolean;
   countRows(table: string): number;
@@ -97,6 +102,9 @@ class NoopPersistence implements IPersistenceLayer {
   getWhatsAppConversations() { this.warn('getWhatsAppConversations'); return []; }
   appendAuditEvent(e: any) { this.warn('appendAuditEvent'); }
   getAuditEvents(limit?: number) { this.warn('getAuditEvents'); return []; }
+  getSetting(key: string) { this.warn('getSetting'); return null; }
+  setSetting(key: string, value: string) { this.warn('setSetting'); }
+  getAllSettings() { this.warn('getAllSettings'); return {}; }
   rowExists(table: string, id: string) { this.warn('rowExists'); return false; }
   countRows(table: string) { this.warn('countRows'); return 0; }
 }

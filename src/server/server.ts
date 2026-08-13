@@ -56,6 +56,9 @@ const sqliteLayer: IPersistenceLayer = {
   getWhatsAppConversations: SqliteDb.dbGetWhatsAppConversations,
   appendAuditEvent: SqliteDb.dbAppendAuditEvent,
   getAuditEvents: SqliteDb.dbGetAuditEvents,
+  getSetting: SqliteDb.dbGetSetting,
+  setSetting: SqliteDb.dbSetSetting,
+  getAllSettings: SqliteDb.dbGetAllSettings,
   rowExists: SqliteDb.dbRowExists,
   countRows: SqliteDb.dbCountRows,
 };
@@ -1164,6 +1167,85 @@ app.post('/api/admin/whatsapp/resume-ai', (req: Request, res: Response): void =>
   const adminUserId = (req.headers['x-admin-id'] as string) || 'sys-admin';
   const resumed = AgriTrustDatabase.resumeAllWhatsAppAI(adminUserId);
   res.json({ success: true, aiSystemPaused: !resumed });
+});
+
+/**
+ * GET /api/admin/profile
+ * Returns the stored admin profile from SQLite (falls back to in-memory seed)
+ */
+app.get('/api/admin/profile', (req: Request, res: Response): void => {
+  const stored = sqliteLayer.getSetting('admin_profile');
+  if (stored) {
+    res.json({ success: true, profile: JSON.parse(stored) });
+    return;
+  }
+  // First load — return seed profile from in-memory store
+  const profile = AgriTrustDatabase.getAdminProfile();
+  res.json({ success: true, profile });
+});
+
+/**
+ * PUT /api/admin/profile
+ * Persists admin profile changes to SQLite
+ */
+app.put('/api/admin/profile', (req: Request, res: Response): void => {
+  const updates = req.body;
+  if (!updates || typeof updates !== 'object') {
+    res.status(400).json({ success: false, error: 'Invalid profile data' });
+    return;
+  }
+
+  // Get existing (SQLite or seed)
+  const storedRaw = sqliteLayer.getSetting('admin_profile');
+  const existing = storedRaw
+    ? JSON.parse(storedRaw)
+    : AgriTrustDatabase.getAdminProfile();
+
+  const merged = { ...existing, ...updates, updatedAt: new Date().toISOString() };
+  sqliteLayer.setSetting('admin_profile', JSON.stringify(merged));
+
+  // Also update in-memory store so the rest of the app sees it immediately
+  AgriTrustDatabase.updateAdminProfile(updates, 'sys-admin');
+
+  sqliteLayer.appendAuditEvent({
+    id: `aud-profile-${Date.now()}`,
+    actor: 'sys-admin', actor_role: 'ADMIN',
+    action: 'UPDATE_ADMIN_PROFILE',
+    details: `Updated fields: ${Object.keys(updates).join(', ')}`,
+  });
+
+  res.json({ success: true, profile: merged });
+});
+
+/**
+ * PUT /api/admin/preferences
+ * Persists admin preferences to SQLite
+ */
+app.put('/api/admin/preferences', (req: Request, res: Response): void => {
+  const prefs = req.body;
+  if (!prefs || typeof prefs !== 'object') {
+    res.status(400).json({ success: false, error: 'Invalid preferences data' });
+    return;
+  }
+
+  const storedRaw = sqliteLayer.getSetting('admin_preferences');
+  const existing = storedRaw ? JSON.parse(storedRaw) : {};
+  const merged = { ...existing, ...prefs };
+
+  sqliteLayer.setSetting('admin_preferences', JSON.stringify(merged));
+  AgriTrustDatabase.updateAdminPreferences(prefs, 'sys-admin');
+
+  res.json({ success: true, preferences: merged });
+});
+
+/**
+ * GET /api/admin/preferences
+ */
+app.get('/api/admin/preferences', (req: Request, res: Response): void => {
+  const stored = sqliteLayer.getSetting('admin_preferences');
+  const profile = AgriTrustDatabase.getAdminProfile();
+  const prefs = stored ? JSON.parse(stored) : profile.preferences;
+  res.json({ success: true, preferences: prefs });
 });
 
 const PORT = process.env.PORT || 5000;

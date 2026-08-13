@@ -71,6 +71,130 @@ interface AdminSettingsWorkspaceProps {
   initialAccountSubtab?: 'PROFILE' | 'SECURITY' | 'PASSWORD' | 'TOTP' | 'SESSIONS' | 'ACTIVITY' | 'PREFERENCES';
 }
 
+/** Proper React component so hooks are legal (no IIFE) */
+const WhatsAppWebPanel: React.FC = () => {
+  const [waWebMeta, setWaWebMeta] = useState<any>({ status: 'NOT_CONNECTED', provider: 'whatsapp_web', environment: 'development' });
+  const [polling, setPolling] = useState(false);
+
+  const pollStatus = async () => {
+    try {
+      const r = await fetch('/api/admin/whatsapp/status');
+      const d = await r.json();
+      if (d.success) setWaWebMeta(d.session);
+    } catch {}
+  };
+
+  useEffect(() => { pollStatus(); }, []);
+  useEffect(() => {
+    if (!polling) return;
+    const iv = setInterval(pollStatus, 2000);
+    return () => clearInterval(iv);
+  }, [polling]);
+
+  const statusColor = waWebMeta.status === 'CONNECTED' ? '#22c55e'
+    : waWebMeta.status === 'QR_REQUIRED' ? '#f59e0b'
+    : waWebMeta.status === 'STARTING' || waWebMeta.status === 'AUTHENTICATING' ? '#3b82f6'
+    : '#64748b';
+
+  return (
+    <div className="card" style={{ padding: '1.75rem', display: 'flex', flexDirection: 'column', gap: '1.25rem', border: `2px solid ${statusColor}` }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          <div style={{ width: '2.5rem', height: '2.5rem', borderRadius: 'var(--radius-md)', backgroundColor: '#25D366', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Smartphone size={22} />
+          </div>
+          <div>
+            <h3 className="text-lg font-bold" style={{ margin: 0 }}>WhatsApp Web — Development Connection</h3>
+            <p className="text-muted text-xs" style={{ margin: 0 }}>Connect your personal WhatsApp for AI agent testing. Not the Meta Cloud API.</p>
+          </div>
+        </div>
+        <span style={{ fontSize: '0.75rem', fontWeight: 700, backgroundColor: statusColor, color: '#fff', padding: '0.25rem 0.85rem', borderRadius: 99 }}>
+          {waWebMeta.status}
+        </span>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.75rem' }}>
+        {[{ label: 'Provider', value: 'WhatsApp Web' }, { label: 'Environment', value: 'DEVELOPMENT' }, { label: 'Meta Cloud API', value: 'Not Connected' }]
+          .map(item => (
+            <div key={item.label} style={{ padding: '0.75rem', backgroundColor: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)' }}>
+              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{item.label}</div>
+              <div style={{ fontSize: '0.8125rem', fontWeight: 600, marginTop: '0.2rem' }}>{item.value}</div>
+            </div>
+          ))}
+      </div>
+
+      {waWebMeta.status === 'CONNECTED' && (
+        <div style={{ padding: '1rem', backgroundColor: 'rgba(34,197,94,0.1)', border: '1px solid #22c55e', borderRadius: 'var(--radius-sm)' }}>
+          <div style={{ fontWeight: 700, color: '#16a34a', marginBottom: '0.4rem' }}>● CONNECTED</div>
+          {waWebMeta.accountName && <div style={{ fontSize: '0.8125rem' }}>Account: <strong>{waWebMeta.accountName}</strong></div>}
+          {waWebMeta.maskedPhone && <div style={{ fontSize: '0.8125rem' }}>Phone: <strong>{waWebMeta.maskedPhone}</strong></div>}
+          {waWebMeta.connectedAt && <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>Connected: {new Date(waWebMeta.connectedAt).toLocaleString()}</div>}
+        </div>
+      )}
+
+      {waWebMeta.status === 'QR_REQUIRED' && waWebMeta.qrCodeDataUrl && (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem', padding: '1.5rem', backgroundColor: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)' }}>
+          <div style={{ fontSize: '0.875rem', fontWeight: 600 }}>Scan with WhatsApp on your phone</div>
+          <img src={waWebMeta.qrCodeDataUrl} alt="WhatsApp Web QR Code" style={{ width: 220, height: 220, borderRadius: 8, border: '2px solid #e2e8f0' }} />
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'center' }}>
+            Open WhatsApp → ⋮ or Settings → Linked Devices → Link a Device
+          </div>
+          <div style={{ fontSize: '0.7rem', color: '#f59e0b' }}>QR refreshes automatically every ~20 seconds</div>
+        </div>
+      )}
+
+      {(waWebMeta.status === 'STARTING' || waWebMeta.status === 'AUTHENTICATING') && (
+        <div style={{ padding: '1rem', backgroundColor: 'rgba(59,130,246,0.1)', border: '1px solid #3b82f6', borderRadius: 'var(--radius-sm)', fontSize: '0.8125rem', color: '#2563eb' }}>
+          {waWebMeta.status === 'STARTING' ? '⏳ Launching browser session — takes 15–30 seconds on first run...' : '⏳ Phone scanned — finishing authentication...'}
+        </div>
+      )}
+
+      {['BROWSER_ERROR', 'CONNECTION_ERROR', 'DISCONNECTED'].includes(waWebMeta.status) && waWebMeta.errorMessage && (
+        <div style={{ padding: '0.75rem', backgroundColor: 'rgba(239,68,68,0.1)', border: '1px solid var(--status-danger)', borderRadius: 'var(--radius-sm)', fontSize: '0.8125rem', color: 'var(--status-danger)' }}>
+          {waWebMeta.errorMessage}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+        {waWebMeta.status !== 'CONNECTED' ? (
+          <button className="btn btn-primary btn-sm" onClick={async () => {
+            try {
+              const r = await fetch('/api/admin/whatsapp/connect', { method: 'POST', headers: { 'x-admin-id': 'sys-admin' } });
+              const d = await r.json();
+              if (d.success) { setWaWebMeta(d.session); setPolling(true); }
+            } catch { alert('Failed to start session. Is the backend server running on port 5000?'); }
+          }}>
+            <Smartphone size={14} /> Connect WhatsApp Web
+          </button>
+        ) : (
+          <button className="btn btn-sm" style={{ backgroundColor: 'var(--status-danger)', color: '#fff', border: 'none' }}
+            onClick={async () => {
+              if (!confirm('Disconnect WhatsApp Web?\n\nConversations and records are preserved.')) return;
+              const r = await fetch('/api/admin/whatsapp/disconnect', { method: 'POST', headers: { 'x-admin-id': 'sys-admin' } });
+              const d = await r.json();
+              if (d.success) { setWaWebMeta(d.session); setPolling(false); }
+            }}>
+            Disconnect
+          </button>
+        )}
+        <button className="btn btn-secondary btn-sm" onClick={pollStatus}>
+          <RefreshCw size={14} /> Refresh
+        </button>
+        {['QR_REQUIRED', 'STARTING', 'AUTHENTICATING'].includes(waWebMeta.status) && (
+          <button className="btn btn-secondary btn-sm" style={{ color: polling ? '#22c55e' : undefined }}
+            onClick={() => setPolling(p => !p)}>
+            {polling ? '● Auto-refresh ON' : 'Enable Auto-refresh'}
+          </button>
+        )}
+      </div>
+
+      <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', margin: 0 }}>
+        ⚠ Development use only. Not the official Meta Cloud API. For production, configure Meta Cloud API below.
+      </p>
+    </div>
+  );
+};
+
 export const AdminSettingsWorkspace: React.FC<AdminSettingsWorkspaceProps> = ({
   initialCategory = 'MY_ACCOUNT',
   initialAccountSubtab = 'PROFILE',
@@ -160,7 +284,21 @@ export const AdminSettingsWorkspace: React.FC<AdminSettingsWorkspaceProps> = ({
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   const refreshData = () => {
-    setProfile(AgriTrustDatabase.getAdminProfile());
+    // Load persisted profile from API
+    fetch('/api/admin/profile')
+      .then(r => r.json())
+      .then(d => { if (d.success) setProfile(d.profile); })
+      .catch(() => setProfile(AgriTrustDatabase.getAdminProfile()));
+
+    // Load persisted preferences
+    fetch('/api/admin/preferences')
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) setProfile(prev => ({ ...prev, preferences: d.preferences }));
+      })
+      .catch(() => {});
+
+    // Non-persisted in-memory state (fine to read from db directly)
     setTotp(AgriTrustDatabase.getTOTPState());
     setSessions(AgriTrustDatabase.getActiveSessions());
     setActivities(AgriTrustDatabase.getAuthenticationLogs());
@@ -178,15 +316,28 @@ export const AdminSettingsWorkspace: React.FC<AdminSettingsWorkspaceProps> = ({
     setSecurityMetrics(AgriTrustDatabase.getUploadSecurityMetrics());
   };
 
+  // Load from API on first mount
+  useEffect(() => { refreshData(); }, []);
+
   // --- Profile Actions ---
-  const handleUpdateProfile = (e: React.FormEvent) => {
+  const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    AgriTrustDatabase.updateAdminProfile(profile, 'sys-admin');
-    refreshData();
-    setSuccessMsg('Profile updated successfully.');
+    try {
+      const res = await fetch('/api/admin/profile', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(profile),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error);
+      setProfile(data.profile);
+      setSuccessMsg('✓ Profile saved successfully.');
+    } catch (err: any) {
+      setSuccessMsg(`Error saving profile: ${err.message}`);
+    }
   };
 
-  const handleUploadPhoto = (e: React.FormEvent) => {
+  const handleUploadPhoto = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!photoUrlInput.trim()) return;
 
@@ -197,29 +348,60 @@ export const AdminSettingsWorkspace: React.FC<AdminSettingsWorkspaceProps> = ({
     }
 
     setUploadError(null);
-    AgriTrustDatabase.updateAdminProfile({ photoUrl: photoUrlInput }, 'sys-admin');
-    setPhotoUrlInput('');
-    refreshData();
-    setSuccessMsg('Profile photo uploaded & verified by security scan pipeline.');
+    try {
+      const res = await fetch('/api/admin/profile', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ photoUrl: photoUrlInput }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error);
+      setProfile(data.profile);
+      setPhotoUrlInput('');
+      setSuccessMsg('✓ Profile photo saved.');
+    } catch (err: any) {
+      setUploadError(`Save failed: ${err.message}`);
+    }
   };
 
-  const handleRemovePhoto = () => {
-    AgriTrustDatabase.removeAdminProfilePhoto('sys-admin');
-    refreshData();
-    setSuccessMsg('Profile photo removed.');
+  const handleRemovePhoto = async () => {
+    try {
+      const res = await fetch('/api/admin/profile', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ photoUrl: '' }),
+      });
+      const data = await res.json();
+      if (data.success) { setProfile(data.profile); setSuccessMsg('✓ Profile photo removed.'); }
+    } catch { AgriTrustDatabase.removeAdminProfilePhoto('sys-admin'); refreshData(); }
   };
 
-  const handleVerifyNewEmail = () => {
+  const handleVerifyNewEmail = async () => {
     AgriTrustDatabase.verifyAdminNewEmail('sys-admin');
+    const current = AgriTrustDatabase.getAdminProfile();
+    await fetch('/api/admin/profile', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: current.email, emailPendingVerification: null }),
+    });
     refreshData();
-    setSuccessMsg('Email address change verified successfully!');
+    setSuccessMsg('✓ Email address verified and saved.');
   };
 
-  const handleSavePreferences = (e: React.FormEvent) => {
+  const handleSavePreferences = async (e: React.FormEvent) => {
     e.preventDefault();
-    AgriTrustDatabase.updateAdminPreferences(profile.preferences, 'sys-admin');
-    refreshData();
-    setSuccessMsg('Personal preferences updated successfully.');
+    try {
+      const res = await fetch('/api/admin/preferences', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(profile.preferences),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error);
+      setSuccessMsg('✓ Preferences saved successfully.');
+    } catch (err: any) {
+      setSuccessMsg(`Error saving preferences: ${err.message}`);
+    }
   };
 
   // --- 2FA Actions ---
@@ -988,7 +1170,8 @@ export const AdminSettingsWorkspace: React.FC<AdminSettingsWorkspaceProps> = ({
                 <p className="text-secondary text-xs">Manage API connections for WhatsApp Business, Google Auth, Storage, Email, Payments, and Maps.</p>
               </div>
 
-              {/* WhatsApp Business Official Meta Cloud API Integration */}
+              {/* WhatsApp Web Development Connection */}
+              <WhatsAppWebPanel />
               <div className="card" style={{ padding: '1.75rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>

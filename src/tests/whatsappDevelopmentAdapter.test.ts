@@ -1,9 +1,17 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { AgriTrustDatabase } from '../core/database/db';
 import { WhatsAppMessagingGateway } from '../core/providers/whatsappMessagingGateway';
 import { DevelopmentWhatsAppProvider } from '../core/providers/developmentWhatsAppProvider';
 import { MetaCloudWhatsAppProvider } from '../core/providers/metaCloudWhatsAppProvider';
 import { MetaSecretVault } from '../core/security/metaSecretVault';
+import { generateCommunicationsAgentDraft } from '../core/ai/communicationsAgent';
+import { registerCommunicationsAgent } from '../core/providers/communicationsAgentRegistry';
+
+// Register the real agent so the gateway uses the Anthropic-backed implementation,
+// not the unconfigured browser stub. Safe here: vitest runs under Node.
+beforeAll(() => {
+  registerCommunicationsAgent(generateCommunicationsAgentDraft);
+});
 
 describe('WHATSAPP DEVELOPMENT TEST ADAPTER & PROVIDER ABSTRACTION SUITE', () => {
   beforeEach(() => {

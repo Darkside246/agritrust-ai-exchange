@@ -290,6 +290,22 @@ export async function generateCommunicationsAgentDraft(params: {
   }
 
   const client = getClient();
+
+  // Section 24: Emergency Stop — checked BEFORE API key so a paused system
+  // never calls the model regardless of key availability.
+  if (AgriTrustDatabase.getWhatsAppAccount().aiSystemPaused) {
+    return {
+      draftText: '',
+      riskLevel: 'MEDIUM',
+      requiresHumanApproval: true,
+      isPromptInjectionAttempt: false,
+      toolCalls: [],
+      modelUsed: 'none',
+      blocked: true,
+      blockReason: 'WhatsApp AI is emergency-stopped (Section 24). Message stored; routed to human, no draft generated.',
+    };
+  }
+
   if (!client) {
     return {
       draftText: '',

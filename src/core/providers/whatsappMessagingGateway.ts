@@ -1,10 +1,15 @@
 import { IWhatsAppProvider, WhatsAppProviderType, ProviderHealthStatus, WhatsAppProviderMessageResult } from './whatsappProviderInterface';
 import { DevelopmentWhatsAppProvider } from './developmentWhatsAppProvider';
-import { WhatsAppWebDevelopmentProvider } from './whatsappWebDevelopmentProvider';
 import { MetaCloudWhatsAppProvider } from './metaCloudWhatsAppProvider';
 import { AuditLedger } from '../audit/auditLedger';
 import { AgriTrustDatabase } from '../database/db';
-import { generateCommunicationsAgentDraft, AgentToolCallRecord } from '../ai/communicationsAgent';
+import type { AgentToolCallRecord } from '../ai/communicationsAgent';
+import { getCommunicationsAgent } from './communicationsAgentRegistry';
+import { getWhatsAppWebProvider } from './whatsappWebProviderRegistry';
+// NOTE: WhatsAppWebDevelopmentProvider and generateCommunicationsAgentDraft are
+// intentionally NOT imported here. Both pull in Node-only deps (whatsapp-web.js,
+// puppeteer, @anthropic-ai/sdk). This file is reachable from React components,
+// so those must only be registered from src/server/server.ts (Node-only).
 
 export interface ProcessedInboundMessage {
   messageId: string;
@@ -28,7 +33,6 @@ export interface ProcessedInboundMessage {
 export class WhatsAppMessagingGateway {
   private static activeProviderType: WhatsAppProviderType = 'development';
   private static devProvider: IWhatsAppProvider = new DevelopmentWhatsAppProvider();
-  private static webProvider: IWhatsAppProvider = new WhatsAppWebDevelopmentProvider();
   private static metaProvider: IWhatsAppProvider = new MetaCloudWhatsAppProvider();
 
   public static getActiveProviderType(): WhatsAppProviderType {
@@ -40,7 +44,7 @@ export class WhatsAppMessagingGateway {
       return this.metaProvider;
     }
     if (this.activeProviderType === 'whatsapp_web') {
-      return this.webProvider;
+      return getWhatsAppWebProvider();
     }
     return this.devProvider;
   }
@@ -179,7 +183,7 @@ export class WhatsAppMessagingGateway {
       };
     }
 
-    const agentResult = await generateCommunicationsAgentDraft({
+    const agentResult = await getCommunicationsAgent()({
       conversationId: `wa-conv-${fromPhone.replace(/[^0-9]/g, '')}`,
       fromPhone,
       rawText: text,
