@@ -64,9 +64,24 @@ const sqliteLayer: IPersistenceLayer = {
 };
 registerPersistenceLayer(sqliteLayer);
 
-registerWhatsAppWebSessionController(WhatsAppWebSessionManager);
-registerWhatsAppWebProvider(new WhatsAppWebDevelopmentProvider());
-registerCommunicationsAgent(generateCommunicationsAgentDraft);
+import * as WaStore from '../core/database/whatsappEncryptedStore';
+import { registerSyncFunctions } from '../core/providers/whatsappWebSessionManager';
+
+// Register encrypted store sync functions so the session manager can write
+// to the encrypted SQLite DB without importing it directly (Node-only boundary)
+registerSyncFunctions({
+  upsertChat: WaStore.waUpsertChat,
+  upsertContact: WaStore.waUpsertContact,
+  upsertMessage: WaStore.waUpsertMessage,
+  upsertCallLog: WaStore.waUpsertCallLog,
+  getChats: WaStore.waGetChats,
+  getContacts: WaStore.waGetContacts,
+  getMessages: WaStore.waGetMessages,
+  getCallLogs: WaStore.waGetCallLogs,
+  markChatRead: WaStore.waMarkChatRead,
+  getSyncStats: WaStore.waGetSyncStats,
+  searchContacts: WaStore.waSearchContacts,
+});
 
 // Real inbound WhatsApp Web messages (Section 13, 24) -> the same
 // processInboundWhatsAppMessage() pipeline used by the dev/test HTTP routes.
@@ -1246,6 +1261,93 @@ app.get('/api/admin/preferences', (req: Request, res: Response): void => {
   const profile = AgriTrustDatabase.getAdminProfile();
   const prefs = stored ? JSON.parse(stored) : profile.preferences;
   res.json({ success: true, preferences: prefs });
+});
+
+/**
+ * POST /api/admin/whatsapp/sync
+ * Triggers a full sync of chats, contacts, messages from live session
+ */
+app.post('/api/admin/whatsapp/sync', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await WhatsAppWebSessionManager.runFullSync();
+    res.json({ success: true, synced: result });
+  } catch (err: any) {
+    res.status(503).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/admin/whatsapp/chats
+ * All chats from encrypted store (decrypted for this admin session)
+ */
+app.get('/api/admin/whatsapp/chats', (_req: Request, res: Response): void => {
+  res.json({ success: true, chats: WaStore.waGetChats() });
+});
+
+/**
+ * GET /api/admin/whatsapp/chats/:chatId/messages?limit=50&before=timestamp
+ */
+app.get('/api/admin/whatsapp/chats/:chatId/messages', (req: Request, res: Response): void => {
+  const { chatId } = req.params;
+  const limit = parseInt(req.query.limit as string || '50');
+  const before = req.query.before ? parseInt(req.query.before as string) : undefined;
+  WaStore.waMarkChatRead(chatId);
+  res.json({ success: true, messages: WaStore.waGetMessages(chatId, limit, before) });
+});
+
+/**
+ * POST /api/admin/whatsapp/chats/:chatId/send
+ * Send message to a specific chat
+ */
+app.post('/api/admin/whatsapp/chats/:chatId/send', async (req: Request, res: Response): Promise<void> => {
+  const { chatId } = req.params;
+  const { text } = req.body;
+  if (!text?.trim()) { res.status(400).json({ success: false, error: 'text required' }); return; }
+  try {
+    const phone = chatId.replace(/@c\.us|@g\.us/, '');
+    const result = await WhatsAppWebSessionManager.sendToPhone(phone, text.trim());
+    res.json({ success: true, messageId: result.id });
+  } catch (err: any) {
+    res.status(503).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/admin/whatsapp/new-chat
+ * Start a new chat with any phone number
+ */
+app.post('/api/admin/whatsapp/new-chat', async (req: Request, res: Response): Promise<void> => {
+  const { phone, text } = req.body;
+  if (!phone) { res.status(400).json({ success: false, error: 'phone required' }); return; }
+  try {
+    const result = await WhatsAppWebSessionManager.sendToPhone(phone, text || '👋');
+    res.json({ success: true, messageId: result.id });
+  } catch (err: any) {
+    res.status(503).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/admin/whatsapp/contacts?search=query
+ */
+app.get('/api/admin/whatsapp/contacts', (req: Request, res: Response): void => {
+  const search = req.query.search as string;
+  const contacts = search ? WaStore.waSearchContacts(search) : WaStore.waGetContacts();
+  res.json({ success: true, contacts });
+});
+
+/**
+ * GET /api/admin/whatsapp/call-logs
+ */
+app.get('/api/admin/whatsapp/call-logs', (_req: Request, res: Response): void => {
+  res.json({ success: true, calls: WaStore.waGetCallLogs(200) });
+});
+
+/**
+ * GET /api/admin/whatsapp/sync-stats
+ */
+app.get('/api/admin/whatsapp/sync-stats', (_req: Request, res: Response): void => {
+  res.json({ success: true, stats: WaStore.waGetSyncStats() });
 });
 
 const PORT = process.env.PORT || 5000;

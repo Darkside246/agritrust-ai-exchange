@@ -282,6 +282,14 @@ export const AdminSettingsWorkspace: React.FC<AdminSettingsWorkspaceProps> = ({
 
   // Notifications & Messages
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // Auto-dismiss success toast after 3 seconds
+  useEffect(() => {
+    if (!successMsg) return;
+    const t = setTimeout(() => setSuccessMsg(null), 3000);
+    return () => clearTimeout(t);
+  }, [successMsg]);
 
   const refreshData = () => {
     // Load persisted profile from API
@@ -322,6 +330,7 @@ export const AdminSettingsWorkspace: React.FC<AdminSettingsWorkspaceProps> = ({
   // --- Profile Actions ---
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSaving(true);
     try {
       const res = await fetch('/api/admin/profile', {
         method: 'PUT',
@@ -330,10 +339,12 @@ export const AdminSettingsWorkspace: React.FC<AdminSettingsWorkspaceProps> = ({
       });
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
-      setProfile(data.profile);
+      // Optimistic: profile state already reflects what user typed
       setSuccessMsg('✓ Profile saved successfully.');
     } catch (err: any) {
       setSuccessMsg(`Error saving profile: ${err.message}`);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -390,6 +401,7 @@ export const AdminSettingsWorkspace: React.FC<AdminSettingsWorkspaceProps> = ({
 
   const handleSavePreferences = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSaving(true);
     try {
       const res = await fetch('/api/admin/preferences', {
         method: 'PUT',
@@ -401,6 +413,8 @@ export const AdminSettingsWorkspace: React.FC<AdminSettingsWorkspaceProps> = ({
       setSuccessMsg('✓ Preferences saved successfully.');
     } catch (err: any) {
       setSuccessMsg(`Error saving preferences: ${err.message}`);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -580,12 +594,11 @@ export const AdminSettingsWorkspace: React.FC<AdminSettingsWorkspaceProps> = ({
       </div>
 
       {successMsg && (
-        <div style={{ padding: '0.875rem 1.25rem', backgroundColor: 'var(--brand-primary-light)', color: 'var(--brand-primary)', borderRadius: 'var(--radius-md)', fontSize: '0.8125rem', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <CheckCircle2 size={16} /> {successMsg}
-          </div>
-          <button onClick={() => setSuccessMsg(null)} style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer' }}>
-            <X size={14} />
+        <div style={{ position: 'fixed', bottom: '1.5rem', right: '1.5rem', zIndex: 9999, padding: '0.875rem 1.25rem', backgroundColor: saving ? '#3b82f6' : (successMsg.startsWith('Error') ? '#dc3545' : '#25a244'), color: '#fff', borderRadius: '0.5rem', fontSize: '0.875rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.75rem', boxShadow: '0 4px 20px rgba(0,0,0,0.25)', minWidth: 260, animation: 'slideIn 0.2s ease' }}>
+          <CheckCircle2 size={18} />
+          <span style={{ flex: 1 }}>{successMsg}</span>
+          <button onClick={() => setSuccessMsg(null)} style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', opacity: 0.8 }}>
+            <X size={16} />
           </button>
         </div>
       )}
@@ -814,7 +827,9 @@ export const AdminSettingsWorkspace: React.FC<AdminSettingsWorkspaceProps> = ({
                     </div>
 
                     <div style={{ gridColumn: 'span 2', display: 'flex', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
-                      <button type="submit" className="btn btn-primary btn-md">Save Changes</button>
+                      <button type="submit" className="btn btn-primary btn-md" disabled={saving} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        {saving ? <><span style={{ display: 'inline-block', width: 14, height: 14, border: '2px solid rgba(255,255,255,0.4)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.6s linear infinite' }} /> Saving…</> : 'Save Changes'}
+                      </button>
                     </div>
                   </form>
                 </div>
@@ -992,7 +1007,9 @@ export const AdminSettingsWorkspace: React.FC<AdminSettingsWorkspaceProps> = ({
                   </div>
 
                   <div style={{ gridColumn: 'span 2', display: 'flex', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
-                    <button type="submit" className="btn btn-primary btn-md">Save Preferences</button>
+                    <button type="submit" className="btn btn-primary btn-md" disabled={saving} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      {saving ? <><span style={{ display: 'inline-block', width: 14, height: 14, border: '2px solid rgba(255,255,255,0.4)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.6s linear infinite' }} /> Saving…</> : 'Save Preferences'}
+                    </button>
                   </div>
                 </form>
               )}

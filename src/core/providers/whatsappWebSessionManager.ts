@@ -6,6 +6,25 @@ const WWebClient = (wwebjs as any).Client as typeof Client;
 import * as QRCode from 'qrcode';
 import { AuditLedger } from '../audit/auditLedger';
 
+// Sync functions registered from server.ts so this file stays free of
+// direct better-sqlite3 imports (which would re-enter the browser bundle)
+export type SyncFunctions = {
+  upsertChat: (c: any) => void;
+  upsertContact: (c: any) => void;
+  upsertMessage: (m: any) => void;
+  upsertCallLog: (l: any) => void;
+  getContacts: () => any[];
+  getChats: () => any[];
+  getMessages: (chatId: string, limit?: number, before?: number) => any[];
+  getCallLogs: (limit?: number) => any[];
+  markChatRead: (chatId: string) => void;
+  getSyncStats: () => { chats: number; contacts: number; messages: number; calls: number };
+  searchContacts: (q: string) => any[];
+};
+let _syncFns: SyncFunctions | null = null;
+export function registerSyncFunctions(fns: SyncFunctions): void { _syncFns = fns; }
+export function getSyncFunctions(): SyncFunctions | null { return _syncFns; }
+
 export type WhatsAppWebSessionState =
   | 'NOT_CONNECTED'
   | 'STARTING'
@@ -186,6 +205,11 @@ export class WhatsAppWebSessionManager {
         `ACCOUNT:${accountName}`,
         `WhatsApp Web session is CONNECTED and ready to send/receive real messages (masked phone: ${maskedPhone}).`
       );
+
+      // Full sync runs in background after connection is established
+      this.runFullSync(client).catch((err) => {
+        AuditLedger.logOperationalEvent('sys-admin', 'ADMIN', 'WHATSAPP_WEB_SYNC_ERROR', 'SYNC', `Full sync failed: ${err?.message}`);
+      });
     });
 
     client.on('disconnected', (reason: string) => {
@@ -206,32 +230,89 @@ export class WhatsAppWebSessionManager {
       this.client = null;
     });
 
-    // Section 13-14: real inbound messages, forwarded to registered handlers.
-    // The AI never sees this event directly - only the (fromPhone, text) pair
-    // any handler is given, via the messaging gateway.
+    // Real inbound messages: forward to AI pipeline AND store encrypted
     client.on('message', (msg: Message) => {
-      if (msg.fromMe) return;
-      if (msg.from.endsWith('@g.us')) return; // ignore group chats
       if (msg.from === 'status@broadcast') return;
       if (msg.isStatus) return;
 
-      const fromPhone = `+${msg.from.replace('@c.us', '')}`;
+      const fromPhone = `+${msg.from.replace(/@c\.us|@g\.us/, '')}`;
       const text = msg.body || '';
       this.metadata = { ...this.metadata, lastSeenAt: new Date().toISOString() };
 
-      for (const handler of this.inboundHandlers) {
+      // Store to encrypted DB
+      const fns = getSyncFunctions();
+      if (fns) {
         try {
-          handler(fromPhone, text, msg.id._serialized);
-        } catch (err) {
-          AuditLedger.logOperationalEvent(
-            'sys-admin',
-            'ADMIN',
-            'WHATSAPP_WEB_INBOUND_HANDLER_ERROR',
-            `SENDER:${fromPhone}`,
-            `Inbound message handler threw: ${err instanceof Error ? err.message : String(err)}`
-          );
+          fns.upsertMessage({
+            id: msg.id._serialized, chatId: msg.from, body: text,
+            type: msg.type || 'chat', fromMe: !!msg.fromMe,
+            fromPhone, fromName: (msg as any).notifyName || fromPhone,
+            timestamp: msg.timestamp, hasMedia: !!msg.hasMedia,
+            mediaMimeType: (msg as any).mimetype || undefined,
+            isForwarded: !!(msg as any).isForwarded,
+            isStarred: !!(msg as any).isStarred, ack: (msg as any).ack || 0,
+          });
+          // Update chat's last message
+          fns.upsertChat({
+            id: msg.from,
+            name: (msg as any).notifyName || fromPhone,
+            phone: fromPhone,
+            isGroup: msg.from.endsWith('@g.us'),
+            isArchived: false, isPinned: false, isMuted: false,
+            unreadCount: 1, lastMessage: text,
+            lastMessageType: msg.type || 'chat',
+            lastMessageFromMe: !!msg.fromMe,
+            timestamp: msg.timestamp,
+          });
+        } catch { /* non-fatal */ }
+      }
+
+      // Only forward 1:1 non-status messages to AI pipeline
+      if (!msg.fromMe && !msg.from.endsWith('@g.us')) {
+        for (const handler of this.inboundHandlers) {
+          try {
+            handler(fromPhone, text, msg.id._serialized);
+          } catch (err) {
+            AuditLedger.logOperationalEvent(
+              'sys-admin', 'ADMIN', 'WHATSAPP_WEB_INBOUND_HANDLER_ERROR',
+              `SENDER:${fromPhone}`,
+              `Inbound handler threw: ${err instanceof Error ? err.message : String(err)}`
+            );
+          }
         }
       }
+    });
+
+    // Outgoing messages — store encrypted too
+    client.on('message_create', (msg: Message) => {
+      if (!msg.fromMe) return;
+      const fns = getSyncFunctions();
+      if (!fns) return;
+      try {
+        fns.upsertMessage({
+          id: msg.id._serialized, chatId: msg.to || msg.from, body: msg.body || '',
+          type: msg.type || 'chat', fromMe: true,
+          fromPhone: 'me', fromName: 'Me',
+          timestamp: msg.timestamp, hasMedia: !!msg.hasMedia,
+          mediaMimeType: (msg as any).mimetype || undefined,
+          isForwarded: false, isStarred: false, ack: (msg as any).ack || 1,
+        });
+      } catch { /* non-fatal */ }
+    });
+
+    // Call logs
+    client.on('call', (call: any) => {
+      const fns = getSyncFunctions();
+      if (!fns) return;
+      try {
+        fns.upsertCallLog({
+          id: call.id, fromPhone: call.from || '',
+          fromName: '', fromMe: !!call.fromMe,
+          isVideo: !!call.isVideo, isGroup: !!call.isGroup,
+          timestamp: call.timestamp || Math.floor(Date.now() / 1000),
+          durationSeconds: 0, status: 'incoming',
+        });
+      } catch { /* non-fatal */ }
     });
 
     client.initialize().catch((err: unknown) => {
@@ -252,6 +333,91 @@ export class WhatsAppWebSessionManager {
 
     this.client = client;
     return { ...this.metadata };
+  }
+
+  /** Syncs all chats, contacts and recent messages from the live session */
+  public static async runFullSync(clientArg?: any): Promise<{ chats: number; contacts: number; messages: number }> {
+    const c = clientArg || this.client;
+    if (!c) throw new Error('Not connected');
+    const fns = getSyncFunctions();
+    if (!fns) throw new Error('Sync functions not registered');
+
+    let chatCount = 0, contactCount = 0, msgCount = 0;
+
+    // 1. Contacts
+    try {
+      const contacts = await c.getContacts();
+      for (const contact of contacts) {
+        if (!contact.id?.user) continue;
+        let picUrl: string | undefined;
+        try { picUrl = await contact.getProfilePicUrl(); } catch {}
+        fns.upsertContact({
+          id: contact.id._serialized, phone: contact.number || contact.id.user,
+          name: contact.name, pushname: contact.pushname,
+          shortName: contact.shortName, isBusiness: !!contact.isBusiness,
+          isGroup: !!contact.isGroup, isMyContact: !!contact.isMyContact,
+          isBlocked: !!contact.isBlocked, profilePicUrl: picUrl,
+        });
+        contactCount++;
+      }
+    } catch (err) { AuditLedger.logOperationalEvent('sys-admin', 'ADMIN', 'WA_SYNC_CONTACTS_ERROR', 'SYNC', String(err)); }
+
+    // 2. Chats + recent messages
+    try {
+      const chats = await c.getChats();
+      for (const chat of chats) {
+        let picUrl: string | undefined;
+        try { picUrl = await c.getProfilePicUrl(chat.id._serialized); } catch {}
+        const lastMsg = chat.lastMessage;
+        fns.upsertChat({
+          id: chat.id._serialized, name: chat.name,
+          phone: chat.id.user || '',
+          isGroup: chat.isGroup, isArchived: chat.archived,
+          isPinned: chat.pinned, isMuted: chat.isMuted,
+          unreadCount: chat.unreadCount,
+          lastMessage: lastMsg?.body || '',
+          lastMessageType: lastMsg?.type || 'chat',
+          lastMessageFromMe: !!(lastMsg?.fromMe),
+          timestamp: chat.timestamp,
+          profilePicUrl: picUrl,
+        });
+        chatCount++;
+
+        // Fetch last 50 messages per chat
+        try {
+          const messages = await chat.fetchMessages({ limit: 50 });
+          for (const msg of messages) {
+            fns.upsertMessage({
+              id: msg.id._serialized, chatId: chat.id._serialized,
+              body: msg.body || '', type: msg.type || 'chat',
+              fromMe: !!msg.fromMe, fromPhone: msg.from?.replace(/@c\.us|@g\.us/, '') || '',
+              fromName: (msg as any).notifyName || '',
+              timestamp: msg.timestamp, hasMedia: !!msg.hasMedia,
+              mediaMimeType: (msg as any).mimetype || undefined,
+              isForwarded: !!(msg as any).isForwarded,
+              isStarred: !!(msg as any).isStarred,
+              ack: (msg as any).ack || 0,
+            });
+            msgCount++;
+          }
+        } catch { /* Some chats may fail - continue */ }
+      }
+    } catch (err) { AuditLedger.logOperationalEvent('sys-admin', 'ADMIN', 'WA_SYNC_CHATS_ERROR', 'SYNC', String(err)); }
+
+    AuditLedger.logOperationalEvent('sys-admin', 'ADMIN', 'WHATSAPP_WEB_FULL_SYNC_COMPLETE', 'SYNC',
+      `Sync complete: ${chatCount} chats, ${contactCount} contacts, ${msgCount} messages`);
+
+    return { chats: chatCount, contacts: contactCount, messages: msgCount };
+  }
+
+  /** Send a message to any phone number (starts new chat if needed) */
+  public static async sendToPhone(toPhone: string, text: string): Promise<{ id: string }> {
+    if (!this.client || this.metadata.status !== 'CONNECTED') {
+      throw new Error(`Not connected (status: ${this.metadata.status})`);
+    }
+    const chatId = `${toPhone.replace(/[^0-9]/g, '')}@c.us`;
+    const sent = await this.client.sendMessage(chatId, text);
+    return { id: sent.id._serialized };
   }
 
   /** Real send. Throws if not connected - caller (provider) is responsible for catching. */
