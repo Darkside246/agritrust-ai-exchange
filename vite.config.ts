@@ -36,6 +36,9 @@ export default defineConfig({
   },
   server: {
     port: 3000,
+    watch: {
+      ignored: ['**/.wwebjs_auth/**', '**/*.db', '**/*.sqlite', '**/*.db-journal', '**/*.log'],
+    },
     proxy: {
       '/api': {
         target: 'http://localhost:5000',
