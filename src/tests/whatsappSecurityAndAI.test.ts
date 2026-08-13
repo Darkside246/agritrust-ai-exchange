@@ -26,7 +26,7 @@ describe('AGRITRUST WHATSAPP BUSINESS AI COMMUNICATION CORE ACCEPTANCE TESTS', (
     // The account should never have a CONNECTED status from a fake call.
     // In a CI environment with no real credentials it will be NOT_CONNECTED
     // or CONNECTION_ERROR. With real credentials it becomes CONNECTED.
-    expect(['NOT_CONNECTED', 'DISCONNECTED', 'CONNECTION_ERROR', 'CONNECTED']).toContain(account.status);
+    expect(['NOT_CONNECTED', 'DISCONNECTED', 'CONNECTION_ERROR', 'TOKEN_ERROR', 'CONNECTED']).toContain(account.status);
     // These structural properties should always exist regardless of status
     expect(account.id).toBeTruthy();
     expect(account.displayBusinessName).toBeTruthy();

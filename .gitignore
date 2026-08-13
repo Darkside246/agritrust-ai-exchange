@@ -26,3 +26,9 @@ pnpm-debug.log*
 Thumbs.db
 .vscode/
 .idea/
+
+# Local session storage & databases
+.wwebjs_auth
+*.db
+*.db-journal
+*.sqlite
