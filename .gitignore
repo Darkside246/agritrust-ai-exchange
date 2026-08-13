@@ -29,6 +29,7 @@ Thumbs.db
 
 # Local session storage & databases
 .wwebjs_auth
+.wwebjs_cache
 *.db
 *.db-journal
 *.sqlite
