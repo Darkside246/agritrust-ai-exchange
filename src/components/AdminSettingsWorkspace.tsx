@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AgriTrustDatabase } from '../core/database/db';
+import { MetaCloudSetupGuide } from './MetaCloudSetupGuide';
 import { 
   AdminProfile, 
   TOTP2FAState, 
@@ -1189,151 +1190,9 @@ export const AdminSettingsWorkspace: React.FC<AdminSettingsWorkspaceProps> = ({
 
               {/* WhatsApp Web Development Connection */}
               <WhatsAppWebPanel />
-              <div className="card" style={{ padding: '1.75rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                    <div style={{ width: '2.5rem', height: '2.5rem', borderRadius: 'var(--radius-md)', backgroundColor: '#25D366', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <Smartphone size={22} />
-                    </div>
-                    <div>
-                      <h3 className="text-lg font-bold" style={{ margin: 0 }}>WhatsApp Business Integration</h3>
-                      <p className="text-muted text-xs" style={{ margin: 0 }}>
-                        Active Provider: <strong>{
-                          AgriTrustDatabase.getWhatsAppProviderType() === 'whatsapp_web'
-                            ? 'WhatsApp Web Live Session (DEVELOPMENT)'
-                            : AgriTrustDatabase.getWhatsAppProviderType() === 'development'
-                            ? 'Development Test Adapter (TEST)'
-                            : 'Meta Cloud API v20.0 (PRODUCTION)'
-                        }</strong>
-                      </p>
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    <span className="badge badge-brand font-bold" style={{ fontSize: '0.75rem' }}>
-                      PROVIDER: {AgriTrustDatabase.getWhatsAppProviderType().toUpperCase()}
-                    </span>
-                    <span className={`badge ${waAccount.status === 'CONNECTED' ? 'badge-success' : 'badge-secondary'} font-bold`} style={{ fontSize: '0.75rem' }}>
-                      STATUS: {waAccount.status}
-                    </span>
-                  </div>
-                </div>
 
-                {/* Real Live Meta Account Properties */}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem', backgroundColor: 'var(--bg-surface-elevated)', padding: '1rem', borderRadius: 'var(--radius-md)', fontSize: '0.8125rem' }}>
-                  <div><strong>Phone Number:</strong> {waAccount.phoneNumber}</div>
-                  <div><strong>Business Name:</strong> {waAccount.displayBusinessName}</div>
-                  <div><strong>WABA Account ID:</strong> {waAccount.wabaAccountId}</div>
-                  <div><strong>Webhook Status:</strong> {waAccount.webhookStatus}</div>
-                  <div><strong>Deduplication:</strong> Active (Event Hash)</div>
-                  <div><strong>Prompt Injection Filter:</strong> Enforced</div>
-                </div>
-
-                {/* Meta Credentials Configuration Vault Form (Section 6 & 7) */}
-                <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '1.25rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                  <h4 className="font-bold text-sm" style={{ margin: 0 }}>Meta Platform API Credentials & Vault Storage</h4>
-                  <p className="text-muted text-xs" style={{ margin: 0 }}>
-                    Configure official Meta Graph API v20.0 credentials. Tokens remain securely stored in backend vault with ZERO access granted to AI agents.
-                  </p>
-
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                    <div className="input-group">
-                      <label className="input-label">Meta App ID</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. 1092837492019"
-                        value={metaConfig.metaAppId || ''}
-                        onChange={(e) => setMetaConfig({ ...metaConfig, metaAppId: e.target.value })}
-                        className="input-field font-mono text-xs"
-                      />
-                    </div>
-                    <div className="input-group">
-                      <label className="input-label">WhatsApp Business Account ID (WABA)</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. 1049281094812"
-                        value={metaConfig.whatsappBusinessAccountId || ''}
-                        onChange={(e) => setMetaConfig({ ...metaConfig, whatsappBusinessAccountId: e.target.value })}
-                        className="input-field font-mono text-xs"
-                      />
-                    </div>
-                    <div className="input-group">
-                      <label className="input-label">Phone Number ID</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. 1058291048291"
-                        value={metaConfig.phoneNumberId || ''}
-                        onChange={(e) => setMetaConfig({ ...metaConfig, phoneNumberId: e.target.value })}
-                        className="input-field font-mono text-xs"
-                      />
-                    </div>
-                    <div className="input-group">
-                      <label className="input-label">Webhook Verify Token</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. agritrust_meta_verify_token_2026"
-                        value={metaConfig.webhookVerifyToken || ''}
-                        onChange={(e) => setMetaConfig({ ...metaConfig, webhookVerifyToken: e.target.value })}
-                        className="input-field font-mono text-xs"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="input-group">
-                    <label className="input-label">System User Permanent Access Token (Bearer)</label>
-                    <input
-                      type="password"
-                      placeholder="EAAG... (Meta Permanent System User Token)"
-                      value={metaConfig.accessToken || ''}
-                      onChange={(e) => setMetaConfig({ ...metaConfig, accessToken: e.target.value })}
-                      className="input-field font-mono text-xs"
-                    />
-                  </div>
-
-                  <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem' }}>
-                    <button
-                      onClick={() => {
-                        AgriTrustDatabase.updateMetaCredentialsConfig(metaConfig, 'sys-admin');
-                        alert('Meta API credentials saved securely to Secret Vault.');
-                      }}
-                      className="btn btn-secondary btn-sm"
-                    >
-                      Save Vault Credentials
-                    </button>
-
-                    <button
-                      disabled={isVerifyingMeta}
-                      onClick={async () => {
-                        setIsVerifyingMeta(true);
-                        AgriTrustDatabase.updateMetaCredentialsConfig(metaConfig, 'sys-admin');
-                        const res = await AgriTrustDatabase.verifyAndConnectMetaWhatsApp('sys-admin');
-                        setWaAccount(res);
-                        setIsVerifyingMeta(false);
-                        if (res.status === 'CONNECTED') {
-                          alert(`Meta Graph API Verification Successful!\n\nConnected Account: ${res.displayBusinessName}\nPhone: ${res.phoneNumber}\nStatus: CONNECTED`);
-                        } else {
-                          alert(`Meta Graph API Verification Result:\nStatus: ${res.status}\nPlease check your Meta App credentials.`);
-                        }
-                      }}
-                      className="btn btn-primary btn-sm"
-                    >
-                      <RefreshCw size={14} className={isVerifyingMeta ? 'animate-spin' : ''} />
-                      {isVerifyingMeta ? 'Verifying Meta API...' : '[ Verify & Connect Meta API ]'}
-                    </button>
-
-                    {waAccount.status === 'CONNECTED' && (
-                      <button onClick={() => setShowDisconnectModal(true)} className="btn btn-sm" style={{ backgroundColor: 'var(--status-danger)', color: '#fff', border: 'none' }}>
-                        Disconnect WhatsApp Business
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* CATEGORY 8: SECURITY (PLATFORM SECURITY POLICY & UPLOAD VAULT) */}
-          {activeCategory === 'SECURITY' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+              {/* Meta Cloud API Setup Guide */}
+              <MetaCloudSetupGuide />
               <div className="card" style={{ padding: '1.75rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
                 <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '1rem' }}>
                   <div>

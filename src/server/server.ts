@@ -125,7 +125,148 @@ WhatsAppWebSessionManager.onInboundMessage((fromPhone, text) => {
 });
 
 const app = express();
+
+// Webhook endpoint needs raw body for HMAC verification — must come BEFORE express.json()
+app.use('/api/webhooks/whatsapp', express.raw({ type: 'application/json' }));
 app.use(express.json());
+
+// ─── Smart Provider Auto-Selection ───────────────────────────────────────────
+// Meta Cloud API is used when credentials are in env (Railway production).
+// WhatsApp Web (Puppeteer) is used otherwise (local development only).
+import { MetaSecretVault } from '../core/security/metaSecretVault';
+import { MetaWebhookEngine } from '../core/security/metaWebhookEngine';
+
+if (process.env.META_ACCESS_TOKEN && process.env.META_PHONE_NUMBER_ID) {
+  MetaSecretVault.updateCredentialsConfig({
+    accessToken: process.env.META_ACCESS_TOKEN,
+    phoneNumberId: process.env.META_PHONE_NUMBER_ID,
+    whatsappBusinessAccountId: process.env.META_WABA_ID || '',
+    metaAppId: process.env.META_APP_ID || '',
+    metaAppSecret: process.env.META_APP_SECRET || '',
+    webhookVerifyToken: process.env.META_WEBHOOK_VERIFY_TOKEN || 'agritrust-webhook-token',
+  }, 'sys-admin');
+  AgriTrustDatabase.setWhatsAppProvider('meta_cloud', 'sys-admin');
+  console.log('[AgriTrust] ✓ Meta Cloud API detected — using production provider (no Puppeteer needed).');
+} else {
+  console.log('[AgriTrust] No Meta credentials found — using WhatsApp Web development provider.');
+}
+
+// ─── Meta Cloud API Webhook Endpoints ────────────────────────────────────────
+
+/**
+ * GET /api/webhooks/whatsapp
+ * Meta webhook verification challenge.
+ * Paste this URL in Meta Developer Console → WhatsApp → Configuration → Webhook URL
+ */
+app.get('/api/webhooks/whatsapp', (req: Request, res: Response): void => {
+  const result = MetaWebhookEngine.verifyWebhookChallenge(req.query as any);
+  if (result.isValid) {
+    res.status(200).send(result.challenge);
+  } else {
+    res.status(403).json({ error: result.errorMessage });
+  }
+});
+
+/**
+ * POST /api/webhooks/whatsapp
+ * Receives real incoming WhatsApp messages from Meta Cloud API.
+ * Meta posts signed JSON here when a customer messages you.
+ */
+app.post('/api/webhooks/whatsapp', async (req: Request, res: Response): Promise<void> => {
+  // Verify HMAC signature — reject forged webhooks
+  const signature = req.headers['x-hub-signature-256'] as string;
+  const rawBody = (req.body instanceof Buffer ? req.body : Buffer.from(JSON.stringify(req.body))).toString();
+
+  if (!MetaWebhookEngine.verifyWebhookSignature(rawBody, signature)) {
+    AuditLedger.logImmutableSecurityEvent('sys-admin', 'META_WEBHOOK_SIGNATURE_FAILED', 'HIGH',
+      'Rejected Meta webhook POST with invalid HMAC signature.');
+    res.status(401).json({ error: 'Invalid signature' });
+    return;
+  }
+
+  // Respond 200 immediately — Meta retries if response takes > 20s
+  res.status(200).json({ status: 'received' });
+
+  try {
+    const payload = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+    if (payload?.object !== 'whatsapp_business_account') return;
+
+    for (const entry of payload.entry || []) {
+      for (const change of entry.changes || []) {
+        const value = change.value;
+        if (!value?.messages) continue;
+
+        for (const msg of value.messages) {
+          if (MetaWebhookEngine.isDuplicateEvent(msg.id)) continue;
+
+          const fromPhone = `+${msg.from}`;
+          const text = msg.type === 'text' ? (msg.text?.body || '') : `[${msg.type}]`;
+          const contactName = value.contacts?.[0]?.profile?.name || fromPhone;
+          const ts = parseInt(msg.timestamp) || Math.floor(Date.now() / 1000);
+          const chatId = `${msg.from}@c.us`;
+
+          // Store encrypted
+          WaStore.waUpsertChat({ id: chatId, name: contactName, phone: fromPhone, isGroup: false, isArchived: false, isPinned: false, isMuted: false, unreadCount: 1, lastMessage: text, lastMessageType: msg.type, lastMessageFromMe: false, timestamp: ts });
+          WaStore.waUpsertMessage({ id: msg.id, chatId, body: text, type: msg.type, fromMe: false, fromPhone, fromName: contactName, timestamp: ts, hasMedia: msg.type !== 'text', isForwarded: false, isStarred: false, ack: 0 });
+
+          // AI pipeline
+          AgriTrustDatabase.processInboundWhatsAppMessage(fromPhone, text).catch((err: any) => {
+            console.error('[AgriTrust] Meta webhook AI pipeline error:', err?.message);
+          });
+        }
+
+        // Handle delivery/read status updates
+        for (const status of value.statuses || []) {
+          AuditLedger.logOperationalEvent('sys-admin', 'SYSTEM', 'META_MESSAGE_STATUS',
+            `MSG:${status.id}`, `Status: ${status.status} for recipient ${status.recipient_id}`);
+        }
+      }
+    }
+  } catch (err: any) {
+    console.error('[AgriTrust] Meta webhook parse error:', err?.message);
+  }
+});
+
+/**
+ * GET /api/admin/whatsapp/setup-guide
+ * Returns full setup instructions + current configuration status
+ */
+app.get('/api/admin/whatsapp/setup-guide', (_req: Request, res: Response): void => {
+  const configured = MetaSecretVault.isConfigured();
+  const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN;
+  const publicUrl = process.env.PUBLIC_URL;
+  const baseUrl = railwayDomain ? `https://${railwayDomain}` : publicUrl || 'https://your-app.up.railway.app';
+
+  res.json({
+    success: true,
+    activeProvider: configured ? 'meta_cloud' : 'whatsapp_web',
+    metaConfigured: configured,
+    webhookUrl: `${baseUrl}/api/webhooks/whatsapp`,
+    webhookVerifyToken: process.env.META_WEBHOOK_VERIFY_TOKEN || 'agritrust-webhook-token',
+    requiredEnvVars: [
+      { name: 'META_ACCESS_TOKEN', set: !!process.env.META_ACCESS_TOKEN, description: 'Permanent System User token from Meta Business Manager' },
+      { name: 'META_PHONE_NUMBER_ID', set: !!process.env.META_PHONE_NUMBER_ID, description: 'Phone Number ID from Meta Developer Console → WhatsApp → API Setup' },
+      { name: 'META_WABA_ID', set: !!process.env.META_WABA_ID, description: 'WhatsApp Business Account ID' },
+      { name: 'META_APP_ID', set: !!process.env.META_APP_ID, description: 'Meta App ID' },
+      { name: 'META_APP_SECRET', set: !!process.env.META_APP_SECRET, description: 'App Secret for HMAC webhook signature verification' },
+      { name: 'META_WEBHOOK_VERIFY_TOKEN', set: !!process.env.META_WEBHOOK_VERIFY_TOKEN, description: 'Any string you choose — use the same value in Meta Developer Console' },
+      { name: 'ANTHROPIC_API_KEY', set: !!process.env.ANTHROPIC_API_KEY, description: 'Claude AI key for agent replies' },
+      { name: 'WHATSAPP_ENCRYPTION_KEY', set: !!process.env.WHATSAPP_ENCRYPTION_KEY, description: 'AES-256-GCM key for encrypting messages/contacts at rest' },
+    ],
+    steps: [
+      '1. Go to developers.facebook.com → My Apps → Create App → Business',
+      '2. Add WhatsApp product to your app',
+      '3. Create or connect a WhatsApp Business Account (WABA)',
+      '4. Add and verify a phone number',
+      '5. In Meta Business Manager → System Users → create a System User with FULL_CONTROL on the WABA → generate a permanent token',
+      `6. In Meta Developer Console → WhatsApp → Configuration → set Webhook URL to: ${baseUrl}/api/webhooks/whatsapp`,
+      '7. Set Webhook Verify Token to the same value as META_WEBHOOK_VERIFY_TOKEN',
+      '8. Subscribe to webhook fields: messages, message_deliveries, message_reads',
+      '9. Add all META_* environment variables in Railway → your service → Variables',
+      '10. Click Redeploy in Railway — the app auto-selects Meta Cloud API when credentials are present',
+    ],
+  });
+});
 
 // Initialize Core Database (in-memory layer for UI compatibility)
 AgriTrustDatabase.initialize();
