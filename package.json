@@ -6,8 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:server": "tsc --module commonjs --outDir dist-server src/server/server.ts 2>/dev/null || true",
     "preview": "vite preview",
     "server": "tsx src/server/server.ts",
+    "start": "npm run build && tsx src/server/server.ts",
     "check": "tsc --noEmit",
     "test": "vitest run"
   },

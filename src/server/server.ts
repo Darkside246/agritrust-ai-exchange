@@ -1352,14 +1352,34 @@ app.get('/api/admin/whatsapp/sync-stats', (_req: Request, res: Response): void =
 
 const PORT = process.env.PORT || 5000;
 
-// Global error handler — must be registered AFTER all routes.
-// Catches synchronous throws in route handlers so the process doesn't die.
+// Global error handler
 app.use((err: any, req: Request, res: Response, _next: any) => {
   console.error('[AgriTrust] Unhandled route error:', err?.message || err);
   if (!res.headersSent) {
     res.status(500).json({ success: false, error: 'Internal server error', detail: err?.message });
   }
 });
+
+// Serve built React frontend in production (Railway/Render/any PaaS).
+// The dist/ folder is created by `npm run build` before the server starts.
+import { existsSync } from 'fs';
+import { join as pathJoin, dirname as pathDirname } from 'path';
+import { fileURLToPath as pathURLToPath } from 'url';
+
+const __srvDir = pathDirname(pathURLToPath(import.meta.url));
+const distPath = pathJoin(__srvDir, '../../dist');
+
+if (existsSync(distPath)) {
+  app.use(express.static(distPath));
+  // React Router fallback — serve index.html for all non-API routes
+  app.get('*', (req: Request, res: Response) => {
+    if (!req.path.startsWith('/api')) {
+      res.sendFile(pathJoin(distPath, 'index.html'));
+    }
+  });
+  console.log(`[AgriTrust] Serving built frontend from ${distPath}`);
+}
+
 app.listen(PORT, () => {
   console.log(`[AgriTrust Core API] Server running on port ${PORT}`);
 });

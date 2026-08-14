@@ -33,3 +33,16 @@ Thumbs.db
 *.db
 *.db-journal
 *.sqlite
+
+# SQLite databases (data is local, not committed)
+*.db
+*.db-wal
+*.db-shm
+
+# WhatsApp Web browser session (contains auth tokens - never commit)
+.wwebjs_auth/
+.wwebjs_cache/
+
+# OS
+.DS_Store
+Thumbs.db
