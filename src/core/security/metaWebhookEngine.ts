@@ -59,7 +59,9 @@ export class MetaWebhookEngine {
     const token = query['hub.verify_token'];
     const challenge = query['hub.challenge'];
 
-    const expectedToken = MetaSecretVault.getWebhookVerifyToken();
+    const expectedToken = MetaSecretVault.getWebhookVerifyToken()
+      || process.env.META_WEBHOOK_VERIFY_TOKEN
+      || 'agritrust-webhook-token';
 
     if (!mode || !token) {
       return {
